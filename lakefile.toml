@@ -1,0 +1,17 @@
+name = "lean-minimizer"
+version = "0.1.0"
+defaultTargets = ["minimize"]
+
+[[lean_lib]]
+name = "LeanMinimizer"
+
+[[lean_exe]]
+name = "minimize"
+root = "Main"
+# needed for in-process compilation testing
+supportInterpreter = true
+
+[[lean_exe]]
+name = "test"
+root = "Test"
+supportInterpreter = true
