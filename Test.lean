@@ -28,6 +28,11 @@ def cliDir : FilePath := testDir / "CLI"
 /-- Default marker pattern -/
 def defaultMarker : String := "#guard_msgs"
 
+/-- Strip .lean extension from a file path -/
+def stripLeanExt (path : FilePath) : String :=
+  let s := path.toString
+  if s.endsWith ".lean" then s.dropEnd 5 |>.toString else s
+
 /-- Find all .lean test files in a directory (excluding .out and .marker files) -/
 def findTestFilesIn (dir : FilePath) : IO (Array FilePath) := do
   if !(← dir.pathExists) then
@@ -78,6 +83,17 @@ def getMarker (testFile : FilePath) : IO String := do
   else
     return defaultMarker
 
+/-- Get additional arguments for a test file (from .args file or none) -/
+def getArgs (testFile : FilePath) : IO (Array String) := do
+  let argsFile : FilePath := testFile.toString ++ ".args"
+  if ← argsFile.pathExists then
+    let argsContent ← IO.FS.readFile argsFile
+    -- Split by whitespace and filter empty strings
+    let args := argsContent.trimAscii.toString.splitOn " " |>.filter (!·.isEmpty) |>.toArray
+    return args
+  else
+    return #[]
+
 /-- Result of running a single test -/
 inductive TestResult
   | passed
@@ -87,8 +103,9 @@ inductive TestResult
 
 /-- Run minimizer on a test file and compare with expected output -/
 def runGoldenTest (testFile : FilePath) : IO TestResult := do
-  let expectedFile : FilePath := testFile.toString ++ ".expected.out"
-  let producedFile : FilePath := testFile.toString ++ ".produced.out"
+  let base := stripLeanExt testFile
+  let expectedFile : FilePath := base ++ ".expected.lean"
+  let producedFile : FilePath := base ++ ".produced.lean"
 
   -- Check expected file exists
   if !(← expectedFile.pathExists) then
@@ -100,7 +117,8 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
 
   -- Run minimizer via `lake exe minimize` to ensure imports resolve correctly
   let cwd ← IO.currentDir
-  let args := #[testFile.toString, "--marker", marker]
+  let extraArgs ← getArgs testFile
+  let args := #[testFile.toString, "--marker", marker] ++ extraArgs
   let result ← IO.Process.output {
     cmd := "lake"
     args := #["exe", "minimize"] ++ args
@@ -133,8 +151,9 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
 
 /-- Copy produced output to expected output for a test -/
 def acceptGoldenTest (testFile : FilePath) : IO Unit := do
-  let expectedFile : FilePath := testFile.toString ++ ".expected.out"
-  let producedFile : FilePath := testFile.toString ++ ".produced.out"
+  let base := stripLeanExt testFile
+  let expectedFile : FilePath := base ++ ".expected.lean"
+  let producedFile : FilePath := base ++ ".produced.lean"
 
   if ← producedFile.pathExists then
     let produced ← IO.FS.readFile producedFile
@@ -184,10 +203,11 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
 
 /-- Run a CLI test by executing the minimizer and comparing output -/
 def runCLITest (testFile : FilePath) : IO TestResult := do
-  let expectedOutFile : FilePath := testFile.toString ++ ".expected.out"
-  let expectedErrFile : FilePath := testFile.toString ++ ".expected.err"
-  let producedOutFile : FilePath := testFile.toString ++ ".produced.out"
-  let producedErrFile : FilePath := testFile.toString ++ ".produced.err"
+  let base := stripLeanExt testFile
+  let expectedOutFile : FilePath := base ++ ".expected.lean"
+  let expectedErrFile : FilePath := base ++ ".expected.err"
+  let producedOutFile : FilePath := base ++ ".produced.lean"
+  let producedErrFile : FilePath := base ++ ".produced.err"
 
   let inputFile ← getCLIInput testFile
   let extraArgs ← getCLIArgs testFile
@@ -248,10 +268,11 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
 
 /-- Copy produced output to expected output for a CLI test -/
 def acceptCLITest (testFile : FilePath) : IO Unit := do
-  let expectedOutFile : FilePath := testFile.toString ++ ".expected.out"
-  let expectedErrFile : FilePath := testFile.toString ++ ".expected.err"
-  let producedOutFile : FilePath := testFile.toString ++ ".produced.out"
-  let producedErrFile : FilePath := testFile.toString ++ ".produced.err"
+  let base := stripLeanExt testFile
+  let expectedOutFile : FilePath := base ++ ".expected.lean"
+  let expectedErrFile : FilePath := base ++ ".expected.err"
+  let producedOutFile : FilePath := base ++ ".produced.lean"
+  let producedErrFile : FilePath := base ++ ".produced.err"
 
   if ← producedOutFile.pathExists then
     let produced ← IO.FS.readFile producedOutFile
@@ -302,7 +323,7 @@ def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat
       IO.println s!"  ✗ {name}: {msg}"
       failed := failed + 1
     | .missingExpected =>
-      IO.println s!"  ? {name}: missing .expected.out (run and review, then --accept)"
+      IO.println s!"  ? {name}: missing .expected.lean (run and review, then --accept)"
       failed := failed + 1
 
   return (passed, failed)
@@ -411,7 +432,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         IO.println s!"  ✗ {name}: {msg}"
         errors := errors + 1
       | .missingExpected =>
-        IO.println s!"  ? {name}: missing .expected.out (run minimizer and review, then --accept)"
+        IO.println s!"  ? {name}: missing .expected.lean (run minimizer and review, then --accept)"
         errors := errors + 1
 
   if accept then

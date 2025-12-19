@@ -2,17 +2,21 @@ import LeanMinimizer
 import LeanMinimizer.Pass
 import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
+import LeanMinimizer.Passes.EmptyScopeRemoval
 import LeanMinimizer.Passes.ImportMinimization
+import LeanMinimizer.Passes.ImportInlining
 
 open Lean LeanMinimizer
 
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Deletion → Import Minimization -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Import Minimization → Import Inlining -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   #[]
   |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
   |> (if args.noDelete then id else (·.push deletionPass))
+  |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
   |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
+  |> (if args.noImportInlining then id else (·.push importInliningPass))
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do

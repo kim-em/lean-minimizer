@@ -59,6 +59,11 @@
     → Failed: must keep [4]
   Removed 0 of 5 commands (14 tests)
   No changes, moving to next pass
-[Pass 2] Running: Import Minimization
+[Pass 2] Running: Empty Scope Removal
+  No changes, moving to next pass
+[Pass 3] Running: Import Minimization
   No imports to minimize
+  No changes, moving to next pass
+[Pass 4] Running: Import Inlining
+  No imports to inline
   No changes, moving to next pass

@@ -17,11 +17,22 @@ namespace LeanMinimizer
 
 open Lean
 
+/-- Check if a command is a section, namespace, or end command.
+    These should not be deleted individually to preserve proper scoping. -/
+def isScopeCommand (stx : Syntax) : Bool :=
+  stx.isOfKind `Lean.Parser.Command.namespace ||
+  stx.isOfKind `Lean.Parser.Command.section ||
+  stx.isOfKind `Lean.Parser.Command.end
+
 /-- The command deletion pass.
 
     Uses delta debugging to find a minimal set of commands needed before the marker.
     Pre-computed dependency analysis guides the search by trying to remove
-    unreachable commands first. -/
+    unreachable commands first.
+
+    Note: section, namespace, and end commands are excluded from deletion to prevent
+    silently changing the scoping semantics. A separate pass handles removing empty
+    scope pairs. -/
 unsafe def deletionPass : Pass where
   name := "Command Deletion"
   cliFlag := "delete"
@@ -45,14 +56,31 @@ unsafe def deletionPass : Pass where
     -- Create MinState for ddmin using pre-elaborated data (no re-parsing needed)
     let state ← mkMinStateFromContext ctx
 
+    -- Build candidate list: all indices before marker, excluding scope commands
+    -- We never delete section/namespace/end individually to preserve scoping semantics
+    let allIndices := (Array.range ctx.markerIdx).filter fun idx =>
+      if h : idx < ctx.steps.size then
+        !isScopeCommand ctx.steps[idx].stx
+      else
+        true
+
     -- Verify original compiles
-    let allIndices := Array.range ctx.markerIdx
-    if !(← testCompiles state allIndices) then
+    let originalIndices := Array.range ctx.markerIdx
+    if !(← testCompiles state originalIndices) then
       throw <| IO.userError "Source does not compile"
 
     -- Run ddmin with pre-computed dependency heuristic
+    -- Note: keptIndices will only contain non-scope commands, but we need to
+    -- add back the scope commands that were excluded from deletion
+    let scopeIndices := (Array.range ctx.markerIdx).filter fun idx =>
+      if h : idx < ctx.steps.size then
+        isScopeCommand ctx.steps[idx].stx
+      else
+        false
     let heuristic := precomputedDependencyHeuristic reachable
-    let keptIndices ← ddmin heuristic state allIndices
+    let keptNonScopeIndices ← ddmin heuristic state allIndices
+    -- Combine kept non-scope indices with all scope indices
+    let keptIndices := (keptNonScopeIndices ++ scopeIndices).qsort (· < ·)
 
     let removed := ctx.markerIdx - keptIndices.size
     let changed := removed > 0

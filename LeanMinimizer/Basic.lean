@@ -56,6 +56,9 @@ Options:
   --no-import-minimization
     Disable the import minimization pass.
 
+  --no-import-inlining
+    Disable the import inlining pass.
+
   --help
     Show this help message.
 
@@ -90,6 +93,8 @@ structure Args where
   noDelete : Bool := false
   /-- Disable the import minimization pass -/
   noImportMinimization : Bool := false
+  /-- Disable the import inlining pass -/
+  noImportInlining : Bool := false
 
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
@@ -107,6 +112,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-delete" :: rest => go rest { acc with noDelete := true }
     | "--no-module-removal" :: rest => go rest { acc with noModuleRemoval := true }
     | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
+    | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
@@ -291,18 +297,33 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
   let headerEnd := findHeaderEnd state.input state.headerEndPos
   let mut result := String.Pos.Raw.extract state.input ⟨0⟩ headerEnd
 
+  -- Track if we need to add separator
+  let mut needsSep := false
+
   -- Add kept commands before marker (in sorted order to preserve original order)
   -- Use getSyntaxSource to strip leading comments - comments should be dropped with their command
   let sortedIndices := keepIndices.qsort (· < ·)
   for idx in sortedIndices do
     if idx < state.markerIdx then
       let cmd := state.allCommands[idx]!
-      result := result ++ cmd.getSyntaxSource state.input
+      let src := cmd.getSyntaxSource state.input
+      -- Add newline separator between commands if needed
+      if needsSep && !result.endsWith "\n" then
+        result := result ++ "\n"
+      result := result ++ src
+      -- Add extra blank line after section/namespace end statements
+      if cmd.stx.isOfKind `Lean.Parser.Command.end then
+        result := result ++ "\n"
+      needsSep := true
 
   -- Always include marker and everything after (preserve full source including docstrings)
   for i in [state.markerIdx : state.allCommands.size] do
     let cmd := state.allCommands[i]!
-    result := result ++ cmd.getSyntaxSource state.input
+    let src := cmd.getSyntaxSource state.input
+    if needsSep && !result.endsWith "\n" then
+      result := result ++ "\n"
+    result := result ++ src
+    needsSep := true
 
   result
 
