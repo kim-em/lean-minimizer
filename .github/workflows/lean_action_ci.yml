@@ -14,5 +14,6 @@ jobs:
       - uses: leanprover/lean-action@v1
         with:
           build-args: 'minimize test'
+          test: false
       - name: Run tests
         run: lake exe test
