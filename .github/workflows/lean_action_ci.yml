@@ -16,7 +16,4 @@ jobs:
           build-args: 'minimize test'
           test: false
       - name: Run tests
-        run: |
-          echo "Running test binary directly..."
-          .lake/build/bin/test
-          echo "Tests completed"
+        run: lake env .lake/build/bin/test
