@@ -16,4 +16,9 @@ jobs:
           build-args: 'minimize test'
           test: false
       - name: Run tests
-        run: lake exe test
+        run: |
+          echo "Testing minimize binary directly..."
+          .lake/build/bin/minimize LeanMinimizerTest/Golden/CustomMarker.lean --marker "example" || echo "minimize failed with $?"
+          echo "Binary test done, now running full test suite..."
+          lake exe test
+          echo "Tests completed"
