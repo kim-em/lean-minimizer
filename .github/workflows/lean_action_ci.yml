@@ -17,10 +17,4 @@ jobs:
           test: false
       - name: Run tests
         timeout-minutes: 10
-        run: |
-          ELAN_HOME="${ELAN_HOME:-$HOME/.elan}"
-          # Convert leanprover/lean4:v4.27.0-rc1 to leanprover--lean4---v4.27.0-rc1
-          TOOLCHAIN=$(cat lean-toolchain | sed 's|/|--|g' | sed 's|:|---|g')
-          export LEAN_SYSROOT="$ELAN_HOME/toolchains/$TOOLCHAIN"
-          export LEAN_PATH="$(pwd)/.lake/build/lib/lean:$LEAN_SYSROOT/lib/lean"
-          .lake/build/bin/test
+        run: lake env .lake/build/bin/test
