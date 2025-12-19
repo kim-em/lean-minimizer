@@ -239,14 +239,12 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
     ("LEAN_SYSROOT", leanSysroot),
     ("PATH", path)
   ]
-  IO.eprintln s!"[debug] runCLITest: {testFile}, calling subprocess..."
   let result ← IO.Process.output {
     cmd := (cwd / minimizeBin).toString
     args := args
     cwd := cwd
     env := env
   }
-  IO.eprintln s!"[debug] runCLITest: subprocess returned {result.exitCode}"
 
   -- Write produced outputs
   IO.FS.writeFile producedOutFile result.stdout
@@ -361,22 +359,19 @@ unsafe def runComponentTests : IO (Nat × Nat) := do
   let mut passed := 0
   let mut failed := 0
 
-  let tests : List (String × IO Bool) := [
-    ("RunFrontend", LeanMinimizerTest.Component.RunFrontend.test),
-    ("GetNewConstants", LeanMinimizerTest.Component.GetNewConstants.test),
-    ("GetReferencedConstants", LeanMinimizerTest.Component.GetReferencedConstants.test),
-    ("BuildDependencyMap", LeanMinimizerTest.Component.BuildDependencyMap.test),
-    ("ComputeReachable", LeanMinimizerTest.Component.ComputeReachable.test),
-    ("DependencyHeuristic", LeanMinimizerTest.Component.DependencyHeuristic.test)
+  let tests : List (IO Bool) := [
+    LeanMinimizerTest.Component.RunFrontend.test,
+    LeanMinimizerTest.Component.GetNewConstants.test,
+    LeanMinimizerTest.Component.GetReferencedConstants.test,
+    LeanMinimizerTest.Component.BuildDependencyMap.test,
+    LeanMinimizerTest.Component.ComputeReachable.test,
+    LeanMinimizerTest.Component.DependencyHeuristic.test
   ]
 
-  for (name, test) in tests do
-    IO.eprintln s!"[debug] Running component test: {name}..."
+  for test in tests do
     if ← test then
-      IO.eprintln s!"[debug] Component test {name} passed"
       passed := passed + 1
     else
-      IO.eprintln s!"[debug] Component test {name} FAILED"
       failed := failed + 1
 
   return (passed, failed)
@@ -395,13 +390,7 @@ def parseAcceptArg (args : List String) : Option (Option String) :=
 
 /-- Entry point for `lake exe test` -/
 unsafe def main (args : List String) : IO UInt32 := do
-  -- Use stderr for immediate unbuffered output
-  IO.eprintln "[debug] Test binary main() starting..."
-  IO.eprintln s!"[debug] LEAN_PATH={← IO.getEnv "LEAN_PATH"}"
-  IO.eprintln s!"[debug] LEAN_SYSROOT={← IO.getEnv "LEAN_SYSROOT"}"
-  IO.eprintln "[debug] About to call initSearchPath..."
   initSearchPath (← findSysroot)
-  IO.eprintln "[debug] initSearchPath complete"
 
   let acceptArg := parseAcceptArg args
   let accept := acceptArg.isSome
@@ -418,30 +407,24 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut errors := 0
 
   -- Run CLI tests
-  IO.eprintln "[debug] About to run CLI tests..."
   IO.println "Running CLI tests..."
   IO.println ""
 
   let (cliPassed, cliFailed) ← runCLITests acceptArg
-  IO.eprintln s!"[debug] CLI tests done: {cliPassed} passed, {cliFailed} failed"
   passed := passed + cliPassed
   failed := failed + cliFailed
 
   -- Run component tests
-  IO.eprintln "[debug] About to run component tests..."
   IO.println ""
   IO.println "Running component tests..."
   IO.println ""
 
   let (componentPassed, componentFailed) ← runComponentTests
-  IO.eprintln s!"[debug] Component tests done: {componentPassed} passed, {componentFailed} failed"
   passed := passed + componentPassed
   failed := failed + componentFailed
 
   -- Run golden tests
-  IO.eprintln "[debug] About to find golden test files..."
   let goldenFiles ← findTestFilesIn goldenDir
-  IO.eprintln s!"[debug] Found {goldenFiles.size} golden test files"
 
   if goldenFiles.isEmpty then
     IO.eprintln s!"Warning: No golden test files found in {goldenDir}"
@@ -458,9 +441,7 @@ unsafe def main (args : List String) : IO UInt32 := do
           acceptGoldenTest testFile
         continue
 
-      IO.eprintln s!"[debug] Running golden test: {name}..."
       let result ← runGoldenTest testFile
-      IO.eprintln s!"[debug] Golden test {name} completed"
 
       match result with
       | .passed =>
