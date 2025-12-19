@@ -174,7 +174,9 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
 /-- Run a CLI test by executing the minimizer and comparing output -/
 def runCLITest (testFile : FilePath) : IO TestResult := do
   let expectedOutFile : FilePath := testFile.toString ++ ".expected.out"
+  let expectedErrFile : FilePath := testFile.toString ++ ".expected.err"
   let producedOutFile : FilePath := testFile.toString ++ ".produced.out"
+  let producedErrFile : FilePath := testFile.toString ++ ".produced.err"
 
   let inputFile ← getCLIInput testFile
   let extraArgs ← getCLIArgs testFile
@@ -189,48 +191,70 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
     cwd := cwd
   }
 
-  -- Combine stdout and stderr for comparison (error messages go to stderr)
-  let produced := result.stdout ++ result.stderr
+  -- Write produced outputs
+  IO.FS.writeFile producedOutFile result.stdout
+  IO.FS.writeFile producedErrFile result.stderr
 
-  -- Write produced output
-  IO.FS.writeFile producedOutFile produced
-
-  -- Check expected file exists (after producing output so --accept works)
+  -- Check expected files exist (after producing output so --accept works)
   if !(← expectedOutFile.pathExists) then
     return .missingExpected
 
-  let expected ← IO.FS.readFile expectedOutFile
+  let expectedOut ← IO.FS.readFile expectedOutFile
+  let expectedErr ← if ← expectedErrFile.pathExists then
+    IO.FS.readFile expectedErrFile
+  else
+    pure ""
 
   -- Check exit code
   if result.exitCode != expectedExit then
-    return .failed s!"Exit code mismatch: expected {expectedExit}, got {result.exitCode}\n{produced}"
+    return .failed s!"Exit code mismatch: expected {expectedExit}, got {result.exitCode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
-  -- Compare output (normalize trailing newlines)
-  let expectedNorm := expected.trimRight ++ "\n"
-  let producedNorm := produced.trimRight ++ "\n"
+  -- Compare stdout (normalize trailing newlines)
+  let expectedOutNorm := expectedOut.trimRight ++ "\n"
+  let producedOutNorm := result.stdout.trimRight ++ "\n"
 
-  if expectedNorm == producedNorm then
-    return .passed
-  else
-    -- Generate diff
+  if expectedOutNorm != producedOutNorm then
     let diffResult ← IO.Process.output {
       cmd := "diff"
-      args := #["-u", "--label", "expected", "--label", "produced",
+      args := #["-u", "--label", "expected.out", "--label", "produced.out",
                 expectedOutFile.toString, producedOutFile.toString]
     }
     return .failed diffResult.stdout
 
+  -- Compare stderr (normalize trailing newlines)
+  let expectedErrNorm := expectedErr.trimRight ++ "\n"
+  let producedErrNorm := result.stderr.trimRight ++ "\n"
+
+  if expectedErrNorm != producedErrNorm then
+    let diffResult ← IO.Process.output {
+      cmd := "diff"
+      args := #["-u", "--label", "expected.err", "--label", "produced.err",
+                expectedErrFile.toString, producedErrFile.toString]
+    }
+    return .failed diffResult.stdout
+
+  return .passed
+
 /-- Copy produced output to expected output for a CLI test -/
 def acceptCLITest (testFile : FilePath) : IO Unit := do
-  let expectedFile : FilePath := testFile.toString ++ ".expected.out"
-  let producedFile : FilePath := testFile.toString ++ ".produced.out"
+  let expectedOutFile : FilePath := testFile.toString ++ ".expected.out"
+  let expectedErrFile : FilePath := testFile.toString ++ ".expected.err"
+  let producedOutFile : FilePath := testFile.toString ++ ".produced.out"
+  let producedErrFile : FilePath := testFile.toString ++ ".produced.err"
 
-  if ← producedFile.pathExists then
-    let produced ← IO.FS.readFile producedFile
-    IO.FS.writeFile expectedFile produced
-    IO.println s!"  Updated: {expectedFile}"
+  if ← producedOutFile.pathExists then
+    let produced ← IO.FS.readFile producedOutFile
+    IO.FS.writeFile expectedOutFile produced
+    IO.println s!"  Updated: {expectedOutFile}"
   else
-    IO.eprintln s!"  No produced output for {testFile}"
+    IO.eprintln s!"  No produced stdout for {testFile}"
+
+  if ← producedErrFile.pathExists then
+    let produced ← IO.FS.readFile producedErrFile
+    -- Only write .expected.err if there's actual content
+    if !produced.isEmpty then
+      IO.FS.writeFile expectedErrFile produced
+      IO.println s!"  Updated: {expectedErrFile}"
 
 /-- Run all CLI tests. Returns (passed, failed).
     If acceptFilter is some, only accept tests matching the filter. -/
