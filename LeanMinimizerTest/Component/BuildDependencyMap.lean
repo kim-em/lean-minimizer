@@ -12,14 +12,15 @@ open Lean LeanMinimizer
 /-- Test that buildDependencyMap correctly builds the dependency graph -/
 unsafe def test : IO Bool := do
   let input := "def a := 1\ndef b := a\ndef c := b\ndef unrelated := 99\n"
-  let steps ← runFrontend input "<test>"
+  let frontend ← runFrontend input "<test>"
+  let allSteps := frontend.steps
 
   -- Should have at least 4 commands (may have extra EOF marker)
-  if steps.size < 4 then
-    IO.println s!"  ✗ BuildDependencyMap: expected at least 4 steps, got {steps.size}"
+  if allSteps.size < 4 then
+    IO.println s!"  ✗ BuildDependencyMap: expected at least 4 steps, got {allSteps.size}"
     return false
   -- Use only the first 4 steps for the test
-  let steps := steps[:4]
+  let steps := allSteps[:4].toArray
 
   let analyses := analyzeSteps steps
   let deps := buildDependencyMap analyses

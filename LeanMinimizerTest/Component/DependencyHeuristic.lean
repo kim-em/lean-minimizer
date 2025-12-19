@@ -36,7 +36,8 @@ unsafe def test : IO Bool := do
   let marker := "#guard_msgs"
 
   -- Run frontend to get compilation steps (same as production code)
-  let steps ← runFrontend input fileName
+  let frontend ← runFrontend input fileName
+  let steps := frontend.steps
 
   -- Find the marker index
   let some markerIdx := findMarkerIdxInSteps steps marker

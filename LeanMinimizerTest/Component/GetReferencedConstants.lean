@@ -12,7 +12,8 @@ open Lean LeanMinimizer
 /-- Test that getReferencedConstants correctly extracts references from InfoTrees -/
 unsafe def test : IO Bool := do
   let input := "def base := 1\ndef derived := base + 1\n"
-  let steps ← runFrontend input "<test>"
+  let frontend ← runFrontend input "<test>"
+  let steps := frontend.steps
 
   let some step1 := steps[1]? | do
     IO.println "  ✗ GetReferencedConstants: expected at least 2 steps"

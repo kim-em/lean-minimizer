@@ -21,6 +21,11 @@ to find a minimal set of commands before the marker that are needed for the file
 to compile.
 -/
 
+/-- Check if `needle` is a substring of `haystack` -/
+def String.containsSubstr (haystack needle : String) : Bool :=
+  -- Use splitOn: if needle is present, splitOn will return > 1 element
+  needle.isEmpty || (haystack.splitOn needle).length > 1
+
 namespace LeanMinimizer
 
 open Lean Elab Frontend Parser
@@ -102,17 +107,18 @@ def parseArgs (args : List String) : Except String Args := do
   else
     go args { file := "" }
 
-/-- Check if `needle` is a substring of `haystack` -/
-partial def containsSubstr (haystack needle : String) : Bool :=
-  if needle.isEmpty then true
-  else
-    let hs := haystack.toSlice
-    let ns := needle.toSlice
-    let rec loop (i : Nat) : Bool :=
-      if i + needle.length > haystack.length then false
-      else if (hs.drop i).take needle.length == ns then true
-      else loop (i + 1)
-    loop 0
+/-- Error message when marker is not found in the file -/
+def markerNotFoundError (marker : String) : String :=
+  s!"Marker pattern '{marker}' not found in any command.
+
+Add a marker to identify the section you want to preserve. The recommended
+approach is to use #guard_msgs to capture the exact error:
+
+  /-- error: unknown identifier 'foo' -/
+  #guard_msgs in
+  #check foo
+
+Alternatively, use --marker to specify a different pattern."
 
 /-- Information about a parsed command -/
 structure CmdInfo where
@@ -237,78 +243,6 @@ def CmdInfo.getSyntaxSource (cmd : CmdInfo) (input : String) : String :=
   let actualEnd := skipTrailingWhitespaceAndComments input cmd.startPos cmd.endPos
   String.Pos.Raw.extract input actualStart actualEnd
 
-/-- Parse a file into header and commands with positions -/
-unsafe def parseFileCommands (input : String) (fileName : String) :
-    IO (Syntax × String.Pos.Raw × Array CmdInfo) := do
-  let inputCtx := Parser.mkInputContext input fileName
-
-  -- Parse header
-  let (header, parserState, messages) ← Parser.parseHeader inputCtx
-
-  if messages.hasErrors then
-    throw <| IO.userError "File has errors in header/imports"
-
-  -- Process header to get environment with prelude and imports
-  let (env, messages) ← processHeader header {} messages inputCtx
-
-  if messages.hasErrors then
-    throw <| IO.userError "File has errors processing imports"
-
-  -- Get header end position from parser state
-  let headerEndPos := parserState.pos
-
-  -- Parse commands using the proper environment (with prelude/imports)
-  let mut commands : Array CmdInfo := #[]
-  let mut pstate := parserState
-  let mut idx := 0
-  let mut prevEndPos := headerEndPos
-
-  while true do
-    let pmctx : ParserModuleContext := {
-      env := env
-      options := {}
-      currNamespace := Name.anonymous
-      openDecls := []
-    }
-
-    let (cmd, pstate', _) := Parser.parseCommand inputCtx pmctx pstate {}
-    pstate := pstate'
-
-    if Parser.isTerminalCommand cmd then
-      break
-
-    let endPos := pstate.pos
-    commands := commands.push {
-      idx := idx
-      stx := cmd
-      startPos := prevEndPos  -- Include leading whitespace from previous
-      endPos := endPos
-    }
-    prevEndPos := endPos
-    idx := idx + 1
-
-  return (header, headerEndPos, commands)
-
-/-- Find the index of the marker command.
-
-    For #guard_msgs, also includes the preceding docstring (if present) as part of
-    the invariant section, since the docstring contains the expected output. -/
-def findMarkerIdx (commands : Array CmdInfo) (input : String) (marker : String) : Option Nat := do
-  let idx ← commands.findIdx? fun cmd =>
-    let src := cmd.getSource input
-    containsSubstr src marker
-
-  -- For #guard_msgs, check if the previous command is a docstring
-  -- If so, include it as part of the invariant (return idx - 1)
-  if marker == "#guard_msgs" && idx > 0 then
-    let prevCmd := commands[idx - 1]!
-    let prevSrc := prevCmd.getSource input
-    -- Check if previous command starts with /-- (docstring)
-    if prevSrc.trimLeft.startsWith "/-" then
-      return idx - 1
-
-  return idx
-
 /-- Find where trailing whitespace and line comments end, going backwards from a position -/
 partial def findHeaderEnd (input : String) (endPos : String.Pos.Raw) : String.Pos.Raw :=
   -- Go backwards from endPos to find where actual content ends
@@ -431,30 +365,6 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
   let keptFirst ← ddmin heuristic state firstHalf
   let keptSecond ← ddmin heuristic state secondHalf
   return keptFirst ++ keptSecond
-
-/-- Create a MinState from source. Parses but does not elaborate. -/
-unsafe def mkMinState (input : String) (fileName : String) (marker : String) (verbose : Bool) :
-    IO MinState := do
-  let (header, headerEndPos, commands) ← parseFileCommands input fileName
-
-  let some markerIdx := findMarkerIdx commands input marker
-    | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command.
-
-Add a marker to identify the section you want to preserve. The recommended
-approach is to use #guard_msgs to capture the exact error:
-
-  /-- error: unknown identifier 'foo' -/
-  #guard_msgs in
-  #check foo
-
-Alternatively, use --marker to specify a different pattern."
-
-  let testCount ← IO.mkRef 0
-  return {
-    input, fileName, header, headerEndPos
-    allCommands := commands
-    markerIdx, verbose, testCount
-  }
 
 /-- Create a split heuristic that uses pre-computed reachability data.
     Commands not in `reachable` are tried for removal first. -/

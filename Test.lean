@@ -33,7 +33,7 @@ def findTestFilesIn (dir : FilePath) : IO (Array FilePath) := do
   let leanFiles := entries.filterMap fun entry =>
     let path := entry.path
     let name := entry.fileName
-    if name.endsWith ".lean" && !containsSubstr name ".expected" && !containsSubstr name ".produced" then
+    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" then
       some path
     else
       none
@@ -53,7 +53,7 @@ def findCLITestFilesIn (dir : FilePath) : IO (Array FilePath) := do
   for entry in entries do
     let name := entry.fileName
     -- Direct .lean test files
-    if name.endsWith ".lean" && !containsSubstr name ".expected" && !containsSubstr name ".produced" then
+    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" then
       tests := tests.push entry.path
     -- .lean.input files define tests with external input
     else if name.endsWith ".lean.input" then

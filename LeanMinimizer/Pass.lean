@@ -39,7 +39,11 @@ structure PassContext where
   marker : String
   /-- Whether to print verbose output -/
   verbose : Bool
-  /-- Full elaboration data for all commands -/
+  /-- The parsed header syntax -/
+  header : Syntax
+  /-- End position of header -/
+  headerEndPos : String.Pos.Raw
+  /-- Full elaboration data for all commands (with positions) -/
   steps : Array CompilationStep
   /-- Index of the marker command -/
   markerIdx : Nat
@@ -68,7 +72,7 @@ structure Pass where
 def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Option Nat := do
   let idx ← steps.findIdx? fun step =>
     let stxStr := step.stx.reprint.getD ""
-    containsSubstr stxStr marker
+    stxStr.containsSubstr marker
 
   -- For #guard_msgs, check if the previous command is a docstring
   if marker == "#guard_msgs" && idx > 0 then
@@ -79,6 +83,21 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Opt
         return idx - 1
 
   return idx
+
+/-- Create a MinState from PassContext, using pre-elaborated data.
+    This avoids re-parsing the file. -/
+def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
+  let testCount ← IO.mkRef 0
+  return {
+    input := ctx.source
+    fileName := ctx.fileName
+    header := ctx.header
+    headerEndPos := ctx.headerEndPos
+    allCommands := ctx.steps.map (·.toCmdInfo)
+    markerIdx := ctx.markerIdx
+    verbose := ctx.verbose
+    testCount
+  }
 
 /-- Run passes in sequence according to their on-success actions -/
 unsafe def runPasses (passes : Array Pass) (input : String)
@@ -99,20 +118,17 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       IO.eprintln s!"[Pass {passIdx}] Running: {pass.name}"
 
     -- Elaborate the current source
-    let steps ← runFrontend source fileName
-    let some markerIdx := findMarkerIdxInSteps steps marker
-      | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command.
+    let frontend ← runFrontend source fileName
+    let some markerIdx := findMarkerIdxInSteps frontend.steps marker
+      | throw <| IO.userError (markerNotFoundError marker)
 
-Add a marker to identify the section you want to preserve. The recommended
-approach is to use #guard_msgs to capture the exact error:
-
-  /-- error: unknown identifier 'foo' -/
-  #guard_msgs in
-  #check foo
-
-Alternatively, use --marker to specify a different pattern."
-
-    let ctx : PassContext := { source, fileName, marker, verbose, steps, markerIdx }
+    let ctx : PassContext := {
+      source, fileName, marker, verbose
+      header := frontend.header
+      headerEndPos := frontend.headerEndPos
+      steps := frontend.steps
+      markerIdx
+    }
     let result ← pass.run ctx
 
     if !result.changed then

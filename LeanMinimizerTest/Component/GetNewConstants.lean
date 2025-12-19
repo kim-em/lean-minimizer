@@ -12,7 +12,8 @@ open Lean LeanMinimizer
 /-- Test that getNewConstants correctly identifies newly defined constants -/
 unsafe def test : IO Bool := do
   let input := "def myConst := 42\ndef anotherConst := myConst\n"
-  let steps ← runFrontend input "<test>"
+  let frontend ← runFrontend input "<test>"
+  let steps := frontend.steps
 
   let some step0 := steps[0]? | do
     IO.println "  ✗ GetNewConstants: expected at least 1 step"

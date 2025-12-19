@@ -42,8 +42,8 @@ unsafe def deletionPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Dependency analysis: {reachable.size} commands reachable from invariant"
 
-    -- Create MinState for ddmin (requires parsing but we use pre-computed deps)
-    let state ← mkMinState ctx.source ctx.fileName ctx.marker ctx.verbose
+    -- Create MinState for ddmin using pre-elaborated data (no re-parsing needed)
+    let state ← mkMinStateFromContext ctx
 
     -- Verify original compiles
     let allIndices := Array.range ctx.markerIdx

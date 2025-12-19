@@ -12,7 +12,8 @@ open Lean LeanMinimizer
 /-- Test that runFrontend correctly processes a simple file and returns CompilationSteps -/
 unsafe def test : IO Bool := do
   let input := "def foo := 1\ndef bar := foo + 1\n#check bar\n"
-  let steps ← runFrontend input "<test>"
+  let frontend ← runFrontend input "<test>"
+  let steps := frontend.steps
 
   -- Should have at least 3 commands (may have extra EOF marker)
   if steps.size < 3 then
