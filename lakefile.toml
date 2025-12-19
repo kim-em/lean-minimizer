@@ -8,7 +8,6 @@ name = "LeanMinimizer"
 
 [[lean_lib]]
 name = "LeanMinimizerTest"
-globs = ["LeanMinimizerTest.Component.*", "LeanMinimizerTest.CLI.*", "LeanMinimizerTest.Golden.+"]
 
 [[lean_exe]]
 name = "minimize"

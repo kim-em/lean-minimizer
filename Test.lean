@@ -13,6 +13,7 @@ import LeanMinimizerTest.Component.GetReferencedConstants
 import LeanMinimizerTest.Component.BuildDependencyMap
 import LeanMinimizerTest.Component.ComputeReachable
 import LeanMinimizerTest.Component.DependencyHeuristic
+import LeanMinimizerTest.Golden
 
 open Lean System LeanMinimizer
 

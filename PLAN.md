@@ -1,8 +1,5 @@
 # Future Pass Ideas
 
-## Import Inlining
-Inline an `import X.Y.Z`, wrap the inlined content in `section X.Y.Z`, move imports back to the top, and add any required `end` statements before the closing `end X.Y.Z`.
-
 ## Keyword Substitution
 Replace all `lemma` with `theorem`.
 
