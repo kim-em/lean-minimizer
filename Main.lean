@@ -1,13 +1,18 @@
 import LeanMinimizer
 import LeanMinimizer.Pass
+import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
+import LeanMinimizer.Passes.ImportMinimization
 
 open Lean LeanMinimizer
 
-/-- Build the list of passes based on command line arguments -/
+/-- Build the list of passes based on command line arguments.
+    Pass order: Module Removal → Deletion → Import Minimization -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   #[]
+  |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
   |> (if args.noDelete then id else (·.push deletionPass))
+  |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do

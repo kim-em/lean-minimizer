@@ -47,8 +47,14 @@ Options:
   --verbose
     Print progress information during minimization.
 
+  --no-module-removal
+    Disable the module system removal pass.
+
   --no-delete
     Disable the command deletion pass.
+
+  --no-import-minimization
+    Disable the import minimization pass.
 
   --help
     Show this help message.
@@ -78,8 +84,12 @@ structure Args where
   marker : String := "#guard_msgs"
   verbose : Bool := false
   help : Bool := false
+  /-- Disable the module system removal pass -/
+  noModuleRemoval : Bool := false
   /-- Disable the deletion pass -/
   noDelete : Bool := false
+  /-- Disable the import minimization pass -/
+  noImportMinimization : Bool := false
 
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
@@ -95,6 +105,8 @@ def parseArgs (args : List String) : Except String Args := do
     | "--marker" :: pattern :: rest => go rest { acc with marker := pattern }
     | "--marker" :: [] => .error "--marker requires an argument"
     | "--no-delete" :: rest => go rest { acc with noDelete := true }
+    | "--no-module-removal" :: rest => go rest { acc with noModuleRemoval := true }
+    | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"

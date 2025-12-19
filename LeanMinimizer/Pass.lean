@@ -79,7 +79,7 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Opt
     if h : idx - 1 < steps.size then
       let prevStep := steps[idx - 1]
       let prevStr := prevStep.stx.reprint.getD ""
-      if prevStr.trimLeft.startsWith "/-" then
+      if prevStr.trimAsciiStart.toString.startsWith "/-" then
         return idx - 1
 
   return idx

@@ -4,6 +4,9 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Kim Morrison
 -/
 import LeanMinimizer
+import LeanMinimizer.Passes.ModuleRemoval
+import LeanMinimizer.Passes.Deletion
+import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizerTest.Component.RunFrontend
 import LeanMinimizerTest.Component.GetNewConstants
 import LeanMinimizerTest.Component.GetReferencedConstants
@@ -58,7 +61,7 @@ def findCLITestFilesIn (dir : FilePath) : IO (Array FilePath) := do
     -- .lean.input files define tests with external input
     else if name.endsWith ".lean.input" then
       -- Extract test name (remove .input suffix)
-      let testName := name.dropRight 6  -- drop ".input"
+      let testName := name.dropEnd 6 |>.toString  -- drop ".input"
       let testPath := dir / testName
       -- Only add if there isn't already a .lean file for this test
       if !tests.contains testPath then
@@ -71,7 +74,7 @@ def getMarker (testFile : FilePath) : IO String := do
   let markerFile : FilePath := testFile.toString ++ ".marker"
   if ← markerFile.pathExists then
     let marker ← IO.FS.readFile markerFile
-    return marker.trim
+    return marker.trimAscii.toString
   else
     return defaultMarker
 
@@ -83,7 +86,7 @@ inductive TestResult
   | missingExpected
 
 /-- Run minimizer on a test file and compare with expected output -/
-unsafe def runGoldenTest (testFile : FilePath) : IO TestResult := do
+def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let expectedFile : FilePath := testFile.toString ++ ".expected.out"
   let producedFile : FilePath := testFile.toString ++ ".produced.out"
 
@@ -91,24 +94,31 @@ unsafe def runGoldenTest (testFile : FilePath) : IO TestResult := do
   if !(← expectedFile.pathExists) then
     return .missingExpected
 
-  -- Read input, expected, and marker
-  let input ← IO.FS.readFile testFile
+  -- Read expected output
   let expected ← IO.FS.readFile expectedFile
   let marker ← getMarker testFile
 
-  -- Run minimizer (using same code path as CLI)
-  let produced ← try
-    let passes := #[deletionPass]
-    runPasses passes input testFile.toString marker false
-  catch e =>
-    return .error s!"Minimizer failed: {e}"
+  -- Run minimizer via `lake exe minimize` to ensure imports resolve correctly
+  let cwd ← IO.currentDir
+  let args := #[testFile.toString, "--marker", marker]
+  let result ← IO.Process.output {
+    cmd := "lake"
+    args := #["exe", "minimize"] ++ args
+    cwd := cwd
+  }
+
+  -- Check for errors
+  if result.exitCode != 0 then
+    return .error s!"Minimizer failed (exit {result.exitCode}): {result.stderr}"
+
+  let produced := result.stdout
 
   -- Write produced output
   IO.FS.writeFile producedFile produced
 
   -- Compare (normalize trailing newlines)
-  let expectedNorm := expected.trimRight ++ "\n"
-  let producedNorm := produced.trimRight ++ "\n"
+  let expectedNorm := expected.trimAsciiEnd.toString ++ "\n"
+  let producedNorm := produced.trimAsciiEnd.toString ++ "\n"
 
   if expectedNorm == producedNorm then
     return .passed
@@ -150,7 +160,7 @@ def getCLIArgs (testFile : FilePath) : IO (Array String) := do
   let argsFile : FilePath := testFile.toString ++ ".args"
   if ← argsFile.pathExists then
     let content ← IO.FS.readFile argsFile
-    return content.trim.splitOn " " |>.toArray
+    return content.trimAscii.toString.splitOn " " |>.toArray
   else
     return #[]
 
@@ -159,7 +169,7 @@ def getCLIInput (testFile : FilePath) : IO FilePath := do
   let inputFile : FilePath := testFile.toString ++ ".input"
   if ← inputFile.pathExists then
     let content ← IO.FS.readFile inputFile
-    return content.trim
+    return content.trimAscii.toString
   else
     return testFile
 
@@ -168,7 +178,7 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
   let exitFile : FilePath := testFile.toString ++ ".expected.exit"
   if ← exitFile.pathExists then
     let content ← IO.FS.readFile exitFile
-    return content.trim.toNat!.toUInt32
+    return content.trimAscii.toString.toNat!.toUInt32
   else
     return 0
 
@@ -211,8 +221,8 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
     return .failed s!"Exit code mismatch: expected {expectedExit}, got {result.exitCode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
   -- Compare stdout (normalize trailing newlines)
-  let expectedOutNorm := expectedOut.trimRight ++ "\n"
-  let producedOutNorm := result.stdout.trimRight ++ "\n"
+  let expectedOutNorm := expectedOut.trimAsciiEnd.toString ++ "\n"
+  let producedOutNorm := result.stdout.trimAsciiEnd.toString ++ "\n"
 
   if expectedOutNorm != producedOutNorm then
     let diffResult ← IO.Process.output {
@@ -223,8 +233,8 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
     return .failed diffResult.stdout
 
   -- Compare stderr (normalize trailing newlines)
-  let expectedErrNorm := expectedErr.trimRight ++ "\n"
-  let producedErrNorm := result.stderr.trimRight ++ "\n"
+  let expectedErrNorm := expectedErr.trimAsciiEnd.toString ++ "\n"
+  let producedErrNorm := result.stderr.trimAsciiEnd.toString ++ "\n"
 
   if expectedErrNorm != producedErrNorm then
     let diffResult ← IO.Process.output {

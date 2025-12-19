@@ -1,4 +1,7 @@
-[Pass 0] Running: Command Deletion
+[Pass 0] Running: Module System Removal
+  File does not use module system, skipping
+  No changes, moving to next pass
+[Pass 1] Running: Command Deletion
   Analyzing dependencies from pre-elaborated data...
   Dependency analysis: 5 commands reachable from invariant
   Pre-computed deps: 5 reachable, 5 likely removable
@@ -28,7 +31,7 @@
     → Failed: must keep [4]
   Removed 5 of 10 commands (15 tests)
   Changes made, repeating pass
-[Pass 0] Running: Command Deletion
+[Pass 1] Running: Command Deletion
   Analyzing dependencies from pre-elaborated data...
   Dependency analysis: 5 commands reachable from invariant
   Pre-computed deps: 5 reachable, 0 likely removable
@@ -55,4 +58,7 @@
   Testing: try remove [4]
     → Failed: must keep [4]
   Removed 0 of 5 commands (14 tests)
+  No changes, moving to next pass
+[Pass 2] Running: Import Minimization
+  No imports to minimize
   No changes, moving to next pass
