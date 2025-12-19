@@ -361,19 +361,22 @@ unsafe def runComponentTests : IO (Nat × Nat) := do
   let mut passed := 0
   let mut failed := 0
 
-  let tests : List (IO Bool) := [
-    LeanMinimizerTest.Component.RunFrontend.test,
-    LeanMinimizerTest.Component.GetNewConstants.test,
-    LeanMinimizerTest.Component.GetReferencedConstants.test,
-    LeanMinimizerTest.Component.BuildDependencyMap.test,
-    LeanMinimizerTest.Component.ComputeReachable.test,
-    LeanMinimizerTest.Component.DependencyHeuristic.test
+  let tests : List (String × IO Bool) := [
+    ("RunFrontend", LeanMinimizerTest.Component.RunFrontend.test),
+    ("GetNewConstants", LeanMinimizerTest.Component.GetNewConstants.test),
+    ("GetReferencedConstants", LeanMinimizerTest.Component.GetReferencedConstants.test),
+    ("BuildDependencyMap", LeanMinimizerTest.Component.BuildDependencyMap.test),
+    ("ComputeReachable", LeanMinimizerTest.Component.ComputeReachable.test),
+    ("DependencyHeuristic", LeanMinimizerTest.Component.DependencyHeuristic.test)
   ]
 
-  for test in tests do
+  for (name, test) in tests do
+    IO.eprintln s!"[debug] Running component test: {name}..."
     if ← test then
+      IO.eprintln s!"[debug] Component test {name} passed"
       passed := passed + 1
     else
+      IO.eprintln s!"[debug] Component test {name} FAILED"
       failed := failed + 1
 
   return (passed, failed)
@@ -425,11 +428,13 @@ unsafe def main (args : List String) : IO UInt32 := do
   failed := failed + cliFailed
 
   -- Run component tests
+  IO.eprintln "[debug] About to run component tests..."
   IO.println ""
   IO.println "Running component tests..."
   IO.println ""
 
   let (componentPassed, componentFailed) ← runComponentTests
+  IO.eprintln s!"[debug] Component tests done: {componentPassed} passed, {componentFailed} failed"
   passed := passed + componentPassed
   failed := failed + componentFailed
 
