@@ -123,10 +123,20 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let cwd ← IO.currentDir
   let extraArgs ← getArgs testFile
   let args := #[testFile.toString, "--marker", marker] ++ extraArgs
+  -- Get environment variables needed by the minimize binary
+  let leanPath ← IO.getEnv "LEAN_PATH"
+  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
+  let path ← IO.getEnv "PATH"
+  let env := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", leanSysroot),
+    ("PATH", path)
+  ]
   let result ← IO.Process.output {
     cmd := (cwd / minimizeBin).toString
     args := args
     cwd := cwd
+    env := env
   }
 
   -- Check for errors
@@ -220,10 +230,20 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   -- Run minimizer binary directly (faster than `lake exe minimize`)
   let cwd ← IO.currentDir
   let args := #[inputFile.toString] ++ extraArgs
+  -- Get environment variables needed by the minimize binary
+  let leanPath ← IO.getEnv "LEAN_PATH"
+  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
+  let path ← IO.getEnv "PATH"
+  let env := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", leanSysroot),
+    ("PATH", path)
+  ]
   let result ← IO.Process.output {
     cmd := (cwd / minimizeBin).toString
     args := args
     cwd := cwd
+    env := env
   }
 
   -- Write produced outputs
