@@ -114,7 +114,7 @@ structure CmdInfo where
   idx : Nat
   /-- The parsed syntax -/
   stx : Syntax
-  /-- Start position in the source file -/
+  /-- Start position in the source file (includes leading whitespace/comments from previous) -/
   startPos : String.Pos.Raw
   /-- End position in the source file (including trailing whitespace) -/
   endPos : String.Pos.Raw
@@ -164,9 +164,72 @@ def defaultSplitHeuristic : SplitHeuristic := fun _ candidates => do
   let n := candidates.size / 2
   return (candidates[:n].toArray, candidates[n:].toArray)
 
-/-- Get source text for a command from the original input -/
+/-- Get source text for a command from the original input (includes leading comments) -/
 def CmdInfo.getSource (cmd : CmdInfo) (input : String) : String :=
   String.Pos.Raw.extract input cmd.startPos cmd.endPos
+
+/-- Skip whitespace and line comments starting from a position -/
+partial def skipWhitespaceAndComments (input : String) (startPos : String.Pos.Raw) (endPos : String.Pos.Raw) : String.Pos.Raw :=
+  let endN := endPos.byteIdx
+  let rec loop (pos : Nat) : Nat :=
+    if pos >= endN then pos
+    else
+      let c := String.Pos.Raw.get input ⟨pos⟩
+      if c == ' ' || c == '\t' || c == '\n' || c == '\r' then
+        loop (pos + 1)
+      else if c == '-' && pos + 1 < endN && String.Pos.Raw.get input ⟨pos + 1⟩ == '-' then
+        -- Line comment: skip to end of line
+        let rec skipLine (p : Nat) : Nat :=
+          if p >= endN then p
+          else if String.Pos.Raw.get input ⟨p⟩ == '\n' then loop (p + 1)
+          else skipLine (p + 1)
+        skipLine (pos + 2)
+      else
+        pos
+  ⟨loop startPos.byteIdx⟩
+
+/-- Skip trailing whitespace and line comments, going backwards from endPos.
+    Returns the position after the first newline following actual content.
+    This preserves the newline separator between commands. -/
+partial def skipTrailingWhitespaceAndComments (input : String) (startPos : String.Pos.Raw) (endPos : String.Pos.Raw) : String.Pos.Raw :=
+  let startN := startPos.byteIdx
+  -- First, find where trailing whitespace/comments start by going backwards
+  let rec findContentEnd (pos : Nat) : Nat :=
+    if pos <= startN then startN
+    else
+      let prevPos := pos - 1
+      let c := String.Pos.Raw.get input ⟨prevPos⟩
+      if c == ' ' || c == '\t' || c == '\r' then
+        findContentEnd prevPos
+      else if c == '\n' then
+        -- Check if line before this is a comment
+        let rec checkLineComment (p : Nat) : Option Nat :=
+          if p <= startN then none
+          else
+            let pp := p - 1
+            let cc := String.Pos.Raw.get input ⟨pp⟩
+            if cc == '\n' then none  -- Reached previous line without finding --
+            else if cc == '-' && pp > startN && String.Pos.Raw.get input ⟨pp - 1⟩ == '-' then
+              some (pp - 1)  -- Found start of --
+            else checkLineComment pp
+        match checkLineComment prevPos with
+        | some commentStart => findContentEnd commentStart
+        | none => findContentEnd prevPos  -- Blank line, continue
+      else
+        pos  -- Found actual content
+  let contentEnd := findContentEnd endPos.byteIdx
+  -- Now find the first newline after contentEnd (to include it as separator)
+  let rec findNewline (pos : Nat) : Nat :=
+    if pos >= endPos.byteIdx then endPos.byteIdx
+    else if String.Pos.Raw.get input ⟨pos⟩ == '\n' then pos + 1
+    else findNewline (pos + 1)
+  ⟨findNewline contentEnd⟩
+
+/-- Get source text for just the syntax (excludes leading AND trailing comments) -/
+def CmdInfo.getSyntaxSource (cmd : CmdInfo) (input : String) : String :=
+  let actualStart := skipWhitespaceAndComments input cmd.startPos cmd.endPos
+  let actualEnd := skipTrailingWhitespaceAndComments input cmd.startPos cmd.endPos
+  String.Pos.Raw.extract input actualStart actualEnd
 
 /-- Parse a file into header and commands with positions -/
 unsafe def parseFileCommands (input : String) (fileName : String) :
@@ -240,22 +303,54 @@ def findMarkerIdx (commands : Array CmdInfo) (input : String) (marker : String) 
 
   return idx
 
+/-- Find where trailing whitespace and line comments end, going backwards from a position -/
+partial def findHeaderEnd (input : String) (endPos : String.Pos.Raw) : String.Pos.Raw :=
+  -- Go backwards from endPos to find where actual content ends
+  -- We want to strip trailing whitespace and line comments
+  let endN := endPos.byteIdx
+  let rec loop (pos : Nat) : Nat :=
+    if pos == 0 then 0
+    else
+      let prevPos := pos - 1
+      let c := String.Pos.Raw.get input ⟨prevPos⟩
+      if c == ' ' || c == '\t' || c == '\r' then
+        loop prevPos
+      else if c == '\n' then
+        -- Check if the line before this newline is a comment
+        let rec checkLineComment (p : Nat) : Option Nat :=
+          if p == 0 then none
+          else
+            let pp := p - 1
+            let cc := String.Pos.Raw.get input ⟨pp⟩
+            if cc == '\n' then none  -- Reached previous line
+            else if cc == '-' && pp > 0 && String.Pos.Raw.get input ⟨pp - 1⟩ == '-' then
+              some (pp - 1)  -- Found start of --
+            else checkLineComment pp
+        match checkLineComment prevPos with
+        | some commentStart => loop commentStart
+        | none => pos  -- Not a comment line, keep newline
+      else
+        pos  -- Found actual content
+  ⟨loop endN⟩
+
 /-- Reconstruct source from header and selected command indices -/
 def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := Id.run do
-  -- Always include header (from start of file to headerEndPos)
-  let mut result := String.Pos.Raw.extract state.input ⟨0⟩ state.headerEndPos
+  -- Include header, but strip trailing comments
+  let headerEnd := findHeaderEnd state.input state.headerEndPos
+  let mut result := String.Pos.Raw.extract state.input ⟨0⟩ headerEnd
 
   -- Add kept commands before marker (in sorted order to preserve original order)
+  -- Use getSyntaxSource to strip leading comments - comments should be dropped with their command
   let sortedIndices := keepIndices.qsort (· < ·)
   for idx in sortedIndices do
     if idx < state.markerIdx then
       let cmd := state.allCommands[idx]!
-      result := result ++ cmd.getSource state.input
+      result := result ++ cmd.getSyntaxSource state.input
 
-  -- Always include marker and everything after
+  -- Always include marker and everything after (preserve full source including docstrings)
   for i in [state.markerIdx : state.allCommands.size] do
     let cmd := state.allCommands[i]!
-    result := result ++ cmd.getSource state.input
+    result := result ++ cmd.getSyntaxSource state.input
 
   result
 
