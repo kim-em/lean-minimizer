@@ -239,14 +239,14 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
     ("LEAN_SYSROOT", leanSysroot),
     ("PATH", path)
   ]
-  IO.println s!"[debug] runCLITest: {testFile}, calling subprocess..."
+  IO.eprintln s!"[debug] runCLITest: {testFile}, calling subprocess..."
   let result ← IO.Process.output {
     cmd := (cwd / minimizeBin).toString
     args := args
     cwd := cwd
     env := env
   }
-  IO.println s!"[debug] runCLITest: subprocess returned {result.exitCode}"
+  IO.eprintln s!"[debug] runCLITest: subprocess returned {result.exitCode}"
 
   -- Write produced outputs
   IO.FS.writeFile producedOutFile result.stdout
@@ -392,11 +392,13 @@ def parseAcceptArg (args : List String) : Option (Option String) :=
 
 /-- Entry point for `lake exe test` -/
 unsafe def main (args : List String) : IO UInt32 := do
-  IO.println "[debug] Test starting..."
-  IO.println s!"[debug] LEAN_PATH={← IO.getEnv "LEAN_PATH"}"
-  IO.println s!"[debug] LEAN_SYSROOT={← IO.getEnv "LEAN_SYSROOT"}"
+  -- Use stderr for immediate unbuffered output
+  IO.eprintln "[debug] Test binary main() starting..."
+  IO.eprintln s!"[debug] LEAN_PATH={← IO.getEnv "LEAN_PATH"}"
+  IO.eprintln s!"[debug] LEAN_SYSROOT={← IO.getEnv "LEAN_SYSROOT"}"
+  IO.eprintln "[debug] About to call initSearchPath..."
   initSearchPath (← findSysroot)
-  IO.println "[debug] initSearchPath complete"
+  IO.eprintln "[debug] initSearchPath complete"
 
   let acceptArg := parseAcceptArg args
   let accept := acceptArg.isSome
@@ -413,12 +415,12 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut errors := 0
 
   -- Run CLI tests
-  IO.println "[debug] About to run CLI tests..."
+  IO.eprintln "[debug] About to run CLI tests..."
   IO.println "Running CLI tests..."
   IO.println ""
 
   let (cliPassed, cliFailed) ← runCLITests acceptArg
-  IO.println s!"[debug] CLI tests done: {cliPassed} passed, {cliFailed} failed"
+  IO.eprintln s!"[debug] CLI tests done: {cliPassed} passed, {cliFailed} failed"
   passed := passed + cliPassed
   failed := failed + cliFailed
 
