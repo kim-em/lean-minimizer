@@ -42,6 +42,9 @@ Options:
   --verbose
     Print progress information during minimization.
 
+  --no-delete
+    Disable the command deletion pass.
+
   --help
     Show this help message.
 
@@ -70,6 +73,8 @@ structure Args where
   marker : String := "#guard_msgs"
   verbose : Bool := false
   help : Bool := false
+  /-- Disable the deletion pass -/
+  noDelete : Bool := false
 
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
@@ -84,6 +89,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--verbose" :: rest => go rest { acc with verbose := true }
     | "--marker" :: pattern :: rest => go rest { acc with marker := pattern }
     | "--marker" :: [] => .error "--marker requires an argument"
+    | "--no-delete" :: rest => go rest { acc with noDelete := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
@@ -425,6 +431,48 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
   let keptFirst ← ddmin heuristic state firstHalf
   let keptSecond ← ddmin heuristic state secondHalf
   return keptFirst ++ keptSecond
+
+/-- Create a MinState from source. Parses but does not elaborate. -/
+unsafe def mkMinState (input : String) (fileName : String) (marker : String) (verbose : Bool) :
+    IO MinState := do
+  let (header, headerEndPos, commands) ← parseFileCommands input fileName
+
+  let some markerIdx := findMarkerIdx commands input marker
+    | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command.
+
+Add a marker to identify the section you want to preserve. The recommended
+approach is to use #guard_msgs to capture the exact error:
+
+  /-- error: unknown identifier 'foo' -/
+  #guard_msgs in
+  #check foo
+
+Alternatively, use --marker to specify a different pattern."
+
+  let testCount ← IO.mkRef 0
+  return {
+    input, fileName, header, headerEndPos
+    allCommands := commands
+    markerIdx, verbose, testCount
+  }
+
+/-- Create a split heuristic that uses pre-computed reachability data.
+    Commands not in `reachable` are tried for removal first. -/
+def precomputedDependencyHeuristic (reachable : Array Nat) : SplitHeuristic := fun state candidates => do
+  -- Only use dependency info at top level; fall back to default for recursive calls
+  if candidates.size < state.markerIdx then
+    defaultSplitHeuristic state candidates
+  else
+    let unreachable := candidates.filter fun idx => !reachable.contains idx
+    let reachableInCandidates := candidates.filter fun idx => reachable.contains idx
+
+    if state.verbose then
+      IO.eprintln s!"  Pre-computed deps: {reachable.size} reachable, {unreachable.size} likely removable"
+
+    if unreachable.isEmpty || reachableInCandidates.isEmpty then
+      defaultSplitHeuristic state candidates
+    else
+      return (unreachable, reachableInCandidates)
 
 /-- Main minimization function with custom split heuristic -/
 unsafe def minimizeWith (heuristic : SplitHeuristic) (input : String) (fileName : String)

@@ -1,6 +1,13 @@
 import LeanMinimizer
+import LeanMinimizer.Pass
+import LeanMinimizer.Passes.Deletion
 
 open Lean LeanMinimizer
+
+/-- Build the list of passes based on command line arguments -/
+unsafe def buildPassList (args : Args) : Array Pass :=
+  #[]
+  |> (if args.noDelete then id else (·.push deletionPass))
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do
@@ -18,7 +25,8 @@ unsafe def main (args : List String) : IO UInt32 := do
 
     try
       let input ← IO.FS.readFile parsedArgs.file
-      let result ← minimize input parsedArgs.file parsedArgs.marker parsedArgs.verbose
+      let passes := buildPassList parsedArgs
+      let result ← runPasses passes input parsedArgs.file parsedArgs.marker parsedArgs.verbose
       IO.print result
       return 0
     catch e =>

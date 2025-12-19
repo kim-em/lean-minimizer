@@ -1,29 +1,7 @@
-Parsing LeanMinimizerTest/Golden/DependencyHeuristic.lean...
-Found 11 commands
-Marker found at command 10
-Commands before marker: 10
-
-Command listing:
-  [0] def base := 1
-  [1] def helper1 := base + 1
-  [2] def helper2 := base * 2
-  [3] def result1 := helper1 + helper2
-  [4] def result2 := helper2 + 10
-
--- Unreachable chain ...
-  [5] def unused1 := 100
-  [6] def unused2 := unused1 + 1
-  [7] def unused3 := unused2 + 2
-
--- Unreachable chain 2...
-  [8] def unrelated1 := 999
-  [9] def unrelated2 := unrelated1 * 2
-  [10] [MARKER] /-- info: (4, 12) -/
-#guard_msgs in
-#eval (result1...
-
-Original file compiles, starting minimization...
-  Dependency analysis: 5 commands reachable, 5 likely removable
+[Pass 0] Running: Command Deletion
+  Analyzing dependencies from pre-elaborated data...
+  Dependency analysis: 5 commands reachable from invariant
+  Pre-computed deps: 5 reachable, 5 likely removable
   Testing: try remove [5, 6, 7, 8, 9] (keep [0, 1, 2, 3, 4])
     → Success: removed [5, 6, 7, 8, 9], recursing on [0, 1, 2, 3, 4]
   Testing: try remove [0, 1] (keep [2, 3, 4])
@@ -48,8 +26,33 @@ Original file compiles, starting minimization...
     → Failed: must keep [3]
   Testing: try remove [4]
     → Failed: must keep [4]
-
-Minimization complete:
-  Compilation tests: 15
-  Commands removed: 5 of 10
-  Commands kept: 5
+  Removed 5 of 10 commands (15 tests)
+  Changes made, repeating pass
+[Pass 0] Running: Command Deletion
+  Analyzing dependencies from pre-elaborated data...
+  Dependency analysis: 5 commands reachable from invariant
+  Pre-computed deps: 5 reachable, 0 likely removable
+  Testing: try remove [0, 1] (keep [2, 3, 4])
+    → Failed, trying: remove [2, 3, 4] (keep [0, 1])
+    → Failed: both halves needed, recursing on each
+  Testing: try remove [0] (keep [1])
+    → Failed, trying: remove [1] (keep [0])
+    → Failed: both halves needed, recursing on each
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2] (keep [3, 4])
+    → Failed, trying: remove [3, 4] (keep [2])
+    → Failed: both halves needed, recursing on each
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3] (keep [4])
+    → Failed, trying: remove [4] (keep [3])
+    → Failed: both halves needed, recursing on each
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 0 of 5 commands (14 tests)
+  No changes, moving to next pass

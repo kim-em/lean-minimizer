@@ -2,3 +2,5 @@
 -- Import modules here that should be built as part of the library.
 import LeanMinimizer.Basic
 import LeanMinimizer.Dependencies
+import LeanMinimizer.Pass
+import LeanMinimizer.Passes.Deletion
