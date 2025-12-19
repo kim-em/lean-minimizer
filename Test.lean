@@ -96,9 +96,10 @@ unsafe def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let expected ← IO.FS.readFile expectedFile
   let marker ← getMarker testFile
 
-  -- Run minimizer
+  -- Run minimizer (using same code path as CLI)
   let produced ← try
-    minimize input testFile.toString marker false
+    let passes := #[deletionPass]
+    runPasses passes input testFile.toString marker false
   catch e =>
     return .error s!"Minimizer failed: {e}"
 
