@@ -439,7 +439,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   failed := failed + componentFailed
 
   -- Run golden tests
+  IO.eprintln "[debug] About to find golden test files..."
   let goldenFiles ← findTestFilesIn goldenDir
+  IO.eprintln s!"[debug] Found {goldenFiles.size} golden test files"
 
   if goldenFiles.isEmpty then
     IO.eprintln s!"Warning: No golden test files found in {goldenDir}"
@@ -456,7 +458,9 @@ unsafe def main (args : List String) : IO UInt32 := do
           acceptGoldenTest testFile
         continue
 
+      IO.eprintln s!"[debug] Running golden test: {name}..."
       let result ← runGoldenTest testFile
+      IO.eprintln s!"[debug] Golden test {name} completed"
 
       match result with
       | .passed =>
