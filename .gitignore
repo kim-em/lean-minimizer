@@ -1,3 +1,4 @@
 /.lake
 *.produced.out
+*.produced.lean
 *.produced.err
