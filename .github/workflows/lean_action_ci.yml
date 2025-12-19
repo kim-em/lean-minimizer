@@ -18,7 +18,8 @@ jobs:
       - name: Run tests
         run: |
           ELAN_HOME="${ELAN_HOME:-$HOME/.elan}"
-          TOOLCHAIN=$(cat lean-toolchain)
+          # Convert leanprover/lean4:v4.27.0-rc1 to leanprover--lean4---v4.27.0-rc1
+          TOOLCHAIN=$(cat lean-toolchain | sed 's|/|--|g' | sed 's|:|---|g')
           export LEAN_SYSROOT="$ELAN_HOME/toolchains/$TOOLCHAIN"
           export LEAN_PATH="$(pwd)/.lake/build/lib/lean:$LEAN_SYSROOT/lib/lean"
           echo "LEAN_PATH=$LEAN_PATH"
