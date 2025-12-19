@@ -29,6 +29,9 @@ def cliDir : FilePath := testDir / "CLI"
 /-- Default marker pattern -/
 def defaultMarker : String := "#guard_msgs"
 
+/-- Path to the minimize binary -/
+def minimizeBin : FilePath := ".lake" / "build" / "bin" / "minimize"
+
 /-- Strip .lean extension from a file path -/
 def stripLeanExt (path : FilePath) : String :=
   let s := path.toString
@@ -116,13 +119,13 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let expected ← IO.FS.readFile expectedFile
   let marker ← getMarker testFile
 
-  -- Run minimizer via `lake exe minimize` to ensure imports resolve correctly
+  -- Run minimizer binary directly (faster than `lake exe minimize`)
   let cwd ← IO.currentDir
   let extraArgs ← getArgs testFile
   let args := #[testFile.toString, "--marker", marker] ++ extraArgs
   let result ← IO.Process.output {
-    cmd := "lake"
-    args := #["exe", "minimize"] ++ args
+    cmd := (cwd / minimizeBin).toString
+    args := args
     cwd := cwd
   }
 
@@ -214,12 +217,12 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   let extraArgs ← getCLIArgs testFile
   let expectedExit ← getExpectedExit testFile
 
-  -- Run minimizer from project root
+  -- Run minimizer binary directly (faster than `lake exe minimize`)
   let cwd ← IO.currentDir
   let args := #[inputFile.toString] ++ extraArgs
   let result ← IO.Process.output {
-    cmd := "lake"
-    args := #["exe", "minimize"] ++ args
+    cmd := (cwd / minimizeBin).toString
+    args := args
     cwd := cwd
   }
 
