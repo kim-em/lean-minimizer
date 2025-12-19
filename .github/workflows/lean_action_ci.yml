@@ -16,6 +16,7 @@ jobs:
           build-args: 'minimize test'
           test: false
       - name: Run tests
+        timeout-minutes: 10
         run: |
           ELAN_HOME="${ELAN_HOME:-$HOME/.elan}"
           # Convert leanprover/lean4:v4.27.0-rc1 to leanprover--lean4---v4.27.0-rc1
