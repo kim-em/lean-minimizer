@@ -17,8 +17,6 @@ jobs:
           test: false
       - name: Run tests
         run: |
-          echo "Testing minimize binary directly..."
-          .lake/build/bin/minimize LeanMinimizerTest/Golden/CustomMarker.lean --marker "example" || echo "minimize failed with $?"
-          echo "Binary test done, now running full test suite..."
-          lake exe test
+          echo "Running test binary directly..."
+          .lake/build/bin/test
           echo "Tests completed"
