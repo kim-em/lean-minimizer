@@ -9,7 +9,7 @@ namespace LeanMinimizerTest.Component.DependencyHeuristic
 
 open Lean LeanMinimizer
 
-/-- Test that dependencyHeuristic correctly identifies unreachable commands.
+/-- Test that dependency analysis correctly identifies reachable commands.
 
 For the input:
 ```
@@ -23,10 +23,10 @@ def unrelated := 999 -- cmd 3, no deps
 ```
 
 Since marker is #guard_msgs, markerIdx will be 4 (including the docstring).
-Candidates are [0, 1, 2, 3].
+Commands before marker: [0, 1, 2, 3].
 
-The heuristic should suggest removing cmd 3 (unrelated) first,
-while keeping cmds 0,1,2 (reachable via dependency chain from #eval c).
+The dependency analysis should identify cmds 0,1,2 as reachable (dependency chain
+from #eval c) and cmd 3 as unreachable.
 -/
 unsafe def test : IO Bool := do
   initSearchPath (← findSysroot)
@@ -35,11 +35,11 @@ unsafe def test : IO Bool := do
   let fileName := "<test>"
   let marker := "#guard_msgs"
 
-  -- Parse the file to get header and commands
-  let (header, headerEndPos, allCommands) ← parseFileCommands input fileName
+  -- Run frontend to get compilation steps (same as production code)
+  let steps ← runFrontend input fileName
 
-  -- Find the marker (for #guard_msgs, this includes the preceding docstring)
-  let some markerIdx := findMarkerIdx allCommands input marker
+  -- Find the marker index
+  let some markerIdx := findMarkerIdxInSteps steps marker
     | do
       IO.println "  ✗ DependencyHeuristic: marker not found"
       return false
@@ -49,37 +49,29 @@ unsafe def test : IO Bool := do
     IO.println s!"  ✗ DependencyHeuristic: markerIdx should be 4 (docstring), got {markerIdx}"
     return false
 
-  -- Create the MinState
-  let testCount ← IO.mkRef 0
-  let state : MinState := {
-    input := input
-    fileName := fileName
-    header := header
-    headerEndPos := headerEndPos
-    allCommands := allCommands
-    markerIdx := markerIdx
-    verbose := false
-    testCount := testCount
-  }
+  -- Split steps (same as deletionPass)
+  let stepsBeforeMarker := steps.filter (·.idx < markerIdx)
+  let invariantSteps := steps.filter (·.idx ≥ markerIdx)
 
-  -- Call the heuristic with all candidates before marker
-  let candidates := Array.range markerIdx  -- [0, 1, 2, 3]
-  let (tryRemove, keepForNow) ← dependencyHeuristic state candidates
+  -- Build dependency graph and compute reachability (same as deletionPass)
+  let analyses := analyzeSteps stepsBeforeMarker
+  let deps := buildDependencyMap analyses
+  let invariantDeps := findInvariantDependencies stepsBeforeMarker invariantSteps
+  let reachable := computeReachable deps invariantDeps
 
-  -- The heuristic should suggest trying to remove only cmd 3 (unrelated).
-  -- Reachable/kept: cmds 0, 1, 2 (dependency chain from #eval c)
-
-  if !tryRemove.contains 3 then
-    IO.println s!"  ✗ DependencyHeuristic: should suggest removing cmd 3 (unrelated), got tryRemove={tryRemove.toList}"
+  -- Cmds 0,1,2 should be reachable (dependency chain from #eval c)
+  if !reachable.contains 0 || !reachable.contains 1 || !reachable.contains 2 then
+    IO.println s!"  ✗ DependencyHeuristic: cmds 0,1,2 should be reachable, got reachable={reachable.toList}"
     return false
 
-  if tryRemove.size != 1 then
-    IO.println s!"  ✗ DependencyHeuristic: should only suggest removing 1 cmd, got tryRemove={tryRemove.toList}"
+  -- Cmd 3 should NOT be reachable
+  if reachable.contains 3 then
+    IO.println s!"  ✗ DependencyHeuristic: cmd 3 should not be reachable, got reachable={reachable.toList}"
     return false
 
-  -- Cmds 0,1,2 (dependency chain) should be kept
-  if !keepForNow.contains 0 || !keepForNow.contains 1 || !keepForNow.contains 2 then
-    IO.println s!"  ✗ DependencyHeuristic: should keep cmds 0,1,2, got keepForNow={keepForNow.toList}"
+  -- Verify exactly 3 commands are reachable
+  if reachable.size != 3 then
+    IO.println s!"  ✗ DependencyHeuristic: should have exactly 3 reachable cmds, got {reachable.size}: {reachable.toList}"
     return false
 
   IO.println "  ✓ DependencyHeuristic"

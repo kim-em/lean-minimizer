@@ -65,7 +65,7 @@ structure Pass where
 
 /-- Find the marker index in CompilationStep array.
     For #guard_msgs, also includes the preceding docstring if present. -/
-def findMarkerIdxInSteps (steps : Array CompilationStep) (_source : String) (marker : String) : Option Nat := do
+def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Option Nat := do
   let idx ← steps.findIdx? fun step =>
     let stxStr := step.stx.reprint.getD ""
     containsSubstr stxStr marker
@@ -79,30 +79,6 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (_source : String) (mar
         return idx - 1
 
   return idx
-
-/-- Reconstruct source from CompilationStep array and kept indices -/
-def reconstructSourceFromSteps (steps : Array CompilationStep) (_source : String)
-    (keepIndices : Array Nat) (markerIdx : Nat) : String := Id.run do
-  -- We need to use the original source positions since CompilationStep doesn't have them
-  -- For now, collect the syntax and reprint
-  let mut parts : Array String := #[]
-
-  -- Add kept commands before marker (in sorted order)
-  let sortedIndices := keepIndices.qsort (· < ·)
-  for idx in sortedIndices do
-    if idx < markerIdx then
-      if h : idx < steps.size then
-        if let some s := steps[idx].stx.reprint then
-          parts := parts.push s
-
-  -- Always include marker and everything after
-  for i in [markerIdx : steps.size] do
-    if h : i < steps.size then
-      if let some s := steps[i].stx.reprint then
-        parts := parts.push s
-
-  -- Join with newlines
-  "\n".intercalate parts.toList
 
 /-- Run passes in sequence according to their on-success actions -/
 unsafe def runPasses (passes : Array Pass) (input : String)
@@ -124,7 +100,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
     -- Elaborate the current source
     let steps ← runFrontend source fileName
-    let some markerIdx := findMarkerIdxInSteps steps source marker
+    let some markerIdx := findMarkerIdxInSteps steps marker
       | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command.
 
 Add a marker to identify the section you want to preserve. The recommended
