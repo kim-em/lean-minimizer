@@ -16,4 +16,7 @@ jobs:
           build-args: 'minimize test'
           test: false
       - name: Run tests
-        run: lake env .lake/build/bin/test
+        run: |
+          export LEAN_PATH="$(pwd)/.lake/build/lib/lean:$(dirname $(which lean))/../lib/lean"
+          export LEAN_SYSROOT="$(dirname $(which lean))/.."
+          .lake/build/bin/test
