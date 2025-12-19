@@ -1,9 +1,14 @@
 name = "lean-minimizer"
 version = "0.1.0"
 defaultTargets = ["minimize"]
+testDriver = "test"
 
 [[lean_lib]]
 name = "LeanMinimizer"
+
+[[lean_lib]]
+name = "LeanMinimizerTest"
+globs = ["LeanMinimizerTest.Component.*", "LeanMinimizerTest.CLI.*"]
 
 [[lean_exe]]
 name = "minimize"

@@ -37,7 +37,7 @@ Arguments:
 Options:
   --marker <PATTERN>
     Pattern to search for in commands to identify the invariant section.
-    Default: \"invariant\"
+    Default: \"#guard_msgs\"
 
   --verbose
     Print progress information during minimization.
@@ -46,17 +46,28 @@ Options:
     Show this help message.
 
 Example:
-  lake exe minimize test.lean --marker \"KEEP BELOW\"
+  lake exe minimize test.lean
+  lake exe minimize test.lean --marker \"section invariant\"
 
 The tool will find the first command containing the marker pattern and
 remove as many commands before it as possible while keeping the file
-compilable.
+compilable. It uses dependency analysis to identify which commands are
+actually needed by the invariant section and removes unneeded commands first.
+
+Tip: Use #guard_msgs to mark the section you want to preserve:
+
+  /-- error: unknown identifier 'foo' -/
+  #guard_msgs in
+  #check foo
+
+This captures the exact error message, making it ideal for bug reports
+and regression tests.
 "
 
 /-- Parsed command line arguments -/
 structure Args where
   file : String
-  marker : String := "invariant"
+  marker : String := "#guard_msgs"
   verbose : Bool := false
   help : Bool := false
 
@@ -89,9 +100,11 @@ def parseArgs (args : List String) : Except String Args := do
 partial def containsSubstr (haystack needle : String) : Bool :=
   if needle.isEmpty then true
   else
+    let hs := haystack.toSlice
+    let ns := needle.toSlice
     let rec loop (i : Nat) : Bool :=
       if i + needle.length > haystack.length then false
-      else if haystack.extract ⟨i⟩ ⟨i + needle.length⟩ == needle then true
+      else if (hs.drop i).take needle.length == ns then true
       else loop (i + 1)
     loop 0
 
@@ -102,9 +115,9 @@ structure CmdInfo where
   /-- The parsed syntax -/
   stx : Syntax
   /-- Start position in the source file -/
-  startPos : String.Pos
+  startPos : String.Pos.Raw
   /-- End position in the source file (including trailing whitespace) -/
-  endPos : String.Pos
+  endPos : String.Pos.Raw
   deriving Inhabited
 
 /-- State for the minimization process -/
@@ -116,7 +129,7 @@ structure MinState where
   /-- The header syntax -/
   header : Syntax
   /-- End position of header (including trailing whitespace) -/
-  headerEndPos : String.Pos
+  headerEndPos : String.Pos.Raw
   /-- All commands (before + invariant) -/
   allCommands : Array CmdInfo
   /-- Index of the marker command -/
@@ -126,13 +139,38 @@ structure MinState where
   /-- Counter for compilation tests -/
   testCount : IO.Ref Nat
 
+/-- A heuristic for splitting candidates during delta debugging.
+
+    Given the minimization state and current candidate indices, returns a split
+    `(tryRemoveFirst, tryRemoveSecond)` that partitions the candidates.
+
+    The algorithm will:
+    1. Try removing `tryRemoveFirst` (keeping `tryRemoveSecond`)
+    2. If that fails, try removing `tryRemoveSecond` (keeping `tryRemoveFirst`)
+    3. If both fail, recurse on each half
+
+    A good heuristic puts commands likely to be removable in `tryRemoveFirst`.
+
+    The heuristic has access to:
+    - `state.allCommands` for command syntax and source positions
+    - `state.input` for the original file content
+    - `state.markerIdx` for the marker position
+-/
+def SplitHeuristic := MinState → Array Nat → IO (Array Nat × Array Nat)
+
+/-- Default heuristic: split candidates in half by index.
+    This is the standard delta debugging approach. -/
+def defaultSplitHeuristic : SplitHeuristic := fun _ candidates => do
+  let n := candidates.size / 2
+  return (candidates[:n].toArray, candidates[n:].toArray)
+
 /-- Get source text for a command from the original input -/
 def CmdInfo.getSource (cmd : CmdInfo) (input : String) : String :=
-  input.extract cmd.startPos cmd.endPos
+  String.Pos.Raw.extract input cmd.startPos cmd.endPos
 
 /-- Parse a file into header and commands with positions -/
 unsafe def parseFileCommands (input : String) (fileName : String) :
-    IO (Syntax × String.Pos × Array CmdInfo) := do
+    IO (Syntax × String.Pos.Raw × Array CmdInfo) := do
   let inputCtx := Parser.mkInputContext input fileName
 
   -- Parse header
@@ -141,11 +179,16 @@ unsafe def parseFileCommands (input : String) (fileName : String) :
   if messages.hasErrors then
     throw <| IO.userError "File has errors in header/imports"
 
+  -- Process header to get environment with prelude and imports
+  let (env, messages) ← processHeader header {} messages inputCtx
+
+  if messages.hasErrors then
+    throw <| IO.userError "File has errors processing imports"
+
   -- Get header end position from parser state
   let headerEndPos := parserState.pos
 
-  -- Parse commands (without elaborating)
-  let env ← mkEmptyEnvironment
+  -- Parse commands using the proper environment (with prelude/imports)
   let mut commands : Array CmdInfo := #[]
   let mut pstate := parserState
   let mut idx := 0
@@ -177,19 +220,34 @@ unsafe def parseFileCommands (input : String) (fileName : String) :
 
   return (header, headerEndPos, commands)
 
-/-- Find the index of the marker command -/
-def findMarkerIdx (commands : Array CmdInfo) (input : String) (marker : String) : Option Nat :=
-  commands.findIdx? fun cmd =>
+/-- Find the index of the marker command.
+
+    For #guard_msgs, also includes the preceding docstring (if present) as part of
+    the invariant section, since the docstring contains the expected output. -/
+def findMarkerIdx (commands : Array CmdInfo) (input : String) (marker : String) : Option Nat := do
+  let idx ← commands.findIdx? fun cmd =>
     let src := cmd.getSource input
     containsSubstr src marker
+
+  -- For #guard_msgs, check if the previous command is a docstring
+  -- If so, include it as part of the invariant (return idx - 1)
+  if marker == "#guard_msgs" && idx > 0 then
+    let prevCmd := commands[idx - 1]!
+    let prevSrc := prevCmd.getSource input
+    -- Check if previous command starts with /-- (docstring)
+    if prevSrc.trimLeft.startsWith "/-" then
+      return idx - 1
+
+  return idx
 
 /-- Reconstruct source from header and selected command indices -/
 def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := Id.run do
   -- Always include header (from start of file to headerEndPos)
-  let mut result := state.input.extract ⟨0⟩ state.headerEndPos
+  let mut result := String.Pos.Raw.extract state.input ⟨0⟩ state.headerEndPos
 
-  -- Add kept commands before marker
-  for idx in keepIndices do
+  -- Add kept commands before marker (in sorted order to preserve original order)
+  let sortedIndices := keepIndices.qsort (· < ·)
+  for idx in sortedIndices do
     if idx < state.markerIdx then
       let cmd := state.allCommands[idx]!
       result := result ++ cmd.getSource state.input
@@ -219,54 +277,63 @@ unsafe def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool :
   let s ← IO.processCommands inputCtx parserState (Command.mkState env messages {})
   return !s.commandState.messages.hasErrors
 
-/-- Delta debugging algorithm to find minimal required commands -/
-unsafe def ddmin (state : MinState) (candidates : Array Nat) : IO (Array Nat) := do
+/-- Delta debugging algorithm to find minimal required commands.
+
+    The `heuristic` parameter controls how candidates are split at each step.
+    Use `defaultSplitHeuristic` for standard binary splitting. -/
+unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : Array Nat) :
+    IO (Array Nat) := do
   -- Base case: empty or single element
   if candidates.size == 0 then
     return #[]
 
   if candidates.size == 1 then
     -- Try removing this single command
+    if state.verbose then
+      IO.eprintln s!"  Testing: try remove [{candidates[0]!}]"
     let others := (Array.range state.markerIdx).filter (· ∉ candidates)
     if (← testCompiles state others) then
       if state.verbose then
-        IO.eprintln s!"  Removed command {candidates[0]!}"
+        IO.eprintln s!"    → Success: removed [{candidates[0]!}]"
       return #[]
+    if state.verbose then
+      IO.eprintln s!"    → Failed: must keep [{candidates[0]!}]"
     return candidates
 
-  -- Split into two halves
-  let n := candidates.size / 2
-  let firstHalf := candidates[:n].toArray
-  let secondHalf := candidates[n:].toArray
+  -- Use heuristic to split candidates
+  let (firstHalf, secondHalf) ← heuristic state candidates
 
   if state.verbose then
-    IO.eprintln s!"  Testing split: {firstHalf.size} + {secondHalf.size} commands"
+    IO.eprintln s!"  Testing: try remove {firstHalf.toList} (keep {secondHalf.toList})"
 
   -- Try keeping only second half (removing first half)
   let withoutFirst := (Array.range state.markerIdx).filter (!firstHalf.contains ·)
   if (← testCompiles state withoutFirst) then
     if state.verbose then
-      IO.eprintln s!"  First half removable, recursing on second half"
-    return ← ddmin state secondHalf
+      IO.eprintln s!"    → Success: removed {firstHalf.toList}, recursing on {secondHalf.toList}"
+    return ← ddmin heuristic state secondHalf
+
+  if state.verbose then
+    IO.eprintln s!"    → Failed, trying: remove {secondHalf.toList} (keep {firstHalf.toList})"
 
   -- Try keeping only first half (removing second half)
   let withoutSecond := (Array.range state.markerIdx).filter (!secondHalf.contains ·)
   if (← testCompiles state withoutSecond) then
     if state.verbose then
-      IO.eprintln s!"  Second half removable, recursing on first half"
-    return ← ddmin state firstHalf
+      IO.eprintln s!"    → Success: removed {secondHalf.toList}, recursing on {firstHalf.toList}"
+    return ← ddmin heuristic state firstHalf
 
   -- Both halves are needed; recurse on each
   if state.verbose then
-    IO.eprintln s!"  Both halves needed, recursing on each"
+    IO.eprintln s!"    → Failed: both halves needed, recursing on each"
 
-  let keptFirst ← ddmin state firstHalf
-  let keptSecond ← ddmin state secondHalf
+  let keptFirst ← ddmin heuristic state firstHalf
+  let keptSecond ← ddmin heuristic state secondHalf
   return keptFirst ++ keptSecond
 
-/-- Main minimization function -/
-unsafe def minimize (input : String) (fileName : String) (marker : String) (verbose : Bool) :
-    IO String := do
+/-- Main minimization function with custom split heuristic -/
+unsafe def minimizeWith (heuristic : SplitHeuristic) (input : String) (fileName : String)
+    (marker : String) (verbose : Bool) : IO String := do
   if verbose then
     IO.eprintln s!"Parsing {fileName}..."
 
@@ -277,11 +344,28 @@ unsafe def minimize (input : String) (fileName : String) (marker : String) (verb
 
   -- Find marker
   let some markerIdx := findMarkerIdx commands input marker
-    | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command"
+    | throw <| IO.userError s!"Marker pattern '{marker}' not found in any command.
+
+Add a marker to identify the section you want to preserve. The recommended
+approach is to use #guard_msgs to capture the exact error:
+
+  /-- error: unknown identifier 'foo' -/
+  #guard_msgs in
+  #check foo
+
+Alternatively, use --marker to specify a different pattern."
 
   if verbose then
     IO.eprintln s!"Marker found at command {markerIdx}"
     IO.eprintln s!"Commands before marker: {markerIdx}"
+    IO.eprintln ""
+    IO.eprintln "Command listing:"
+    for cmd in commands do
+      let preview := (cmd.getSource input).trim.take 50
+      let suffix := if preview.length >= 50 then "..." else ""
+      let label := if cmd.idx == markerIdx then " [MARKER]" else ""
+      IO.eprintln s!"  [{cmd.idx}]{label} {preview}{suffix}"
+    IO.eprintln ""
 
   -- Initialize state
   let testCount ← IO.mkRef 0
@@ -302,7 +386,7 @@ unsafe def minimize (input : String) (fileName : String) (marker : String) (verb
     IO.eprintln "Original file compiles, starting minimization..."
 
   -- Run ddmin on commands before marker
-  let keptIndices ← ddmin state allIndices
+  let keptIndices ← ddmin heuristic state allIndices
 
   let finalTestCount ← testCount.get
   let removed := markerIdx - keptIndices.size
