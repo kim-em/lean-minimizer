@@ -210,6 +210,8 @@ unsafe def importMinimizationPass : Pass where
           if ctx.verbose then
             IO.eprintln s!"    Removed import {imp.moduleName}"
           currentSource := newSource
+          if let some outPath := ctx.outputFile then
+            IO.FS.writeFile outPath currentSource
           anyChanges := true
           madeProgress := true
           break
@@ -239,6 +241,8 @@ unsafe def importMinimizationPass : Pass where
               if ctx.verbose then
                 IO.eprintln s!"    Replaced import {imp.moduleName} with its imports"
               currentSource := newSource
+              if let some outPath := ctx.outputFile then
+                IO.FS.writeFile outPath currentSource
               anyChanges := true
               madeProgress := true
               break

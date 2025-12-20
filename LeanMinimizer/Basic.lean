@@ -197,6 +197,8 @@ structure MinState where
   verbose : Bool
   /-- Counter for compilation tests -/
   testCount : IO.Ref Nat
+  /-- Output file to write intermediate results to (optional) -/
+  outputFile : Option String := none
 
 /-- A heuristic for splitting candidates during delta debugging.
 
@@ -397,6 +399,12 @@ def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do
   let source := reconstructSource state keepIndices
   testCompilesSubprocess source state.fileName
 
+/-- Write current progress to the output file if configured -/
+def writeProgress (state : MinState) (keepIndices : Array Nat) : IO Unit := do
+  if let some outPath := state.outputFile then
+    let source := reconstructSource state keepIndices
+    IO.FS.writeFile outPath source
+
 /-- Delta debugging algorithm to find minimal required commands.
 
     The `heuristic` parameter controls how candidates are split at each step.
@@ -415,6 +423,7 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
     if (← testCompiles state others) then
       if state.verbose then
         IO.eprintln s!"    → Success: removed [{candidates[0]!}]"
+      writeProgress state others
       return #[]
     if state.verbose then
       IO.eprintln s!"    → Failed: must keep [{candidates[0]!}]"
@@ -431,6 +440,7 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
   if (← testCompiles state withoutFirst) then
     if state.verbose then
       IO.eprintln s!"    → Success: removed {firstHalf.toList}, recursing on {secondHalf.toList}"
+    writeProgress state withoutFirst
     return ← ddmin heuristic state secondHalf
 
   if state.verbose then
@@ -441,6 +451,7 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
   if (← testCompiles state withoutSecond) then
     if state.verbose then
       IO.eprintln s!"    → Success: removed {secondHalf.toList}, recursing on {firstHalf.toList}"
+    writeProgress state withoutSecond
     return ← ddmin heuristic state firstHalf
 
   -- Both halves are needed; recurse on each

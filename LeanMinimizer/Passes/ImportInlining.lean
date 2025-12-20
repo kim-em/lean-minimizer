@@ -45,8 +45,12 @@ def nameToPathComponents (name : Name) : List String :=
     | Name.num p _ => go p acc  -- Skip numeric components
   go name []
 
-/-- Resolve a module name to a file path within the project.
-    Only resolves project-local modules, not external libraries. -/
+/-- Build a file path from components -/
+def buildModulePath (root : FilePath) (components : List String) : FilePath :=
+  (components.foldl (· / ·) root).withExtension "lean"
+
+/-- Resolve a module name to a file path.
+    Searches both project-local modules and dependencies in .lake/packages/. -/
 def resolveModulePath (modName : Name) (currentFile : String) : IO (Option FilePath) := do
   -- Convert name to path components
   let components := nameToPathComponents modName
@@ -69,17 +73,23 @@ def resolveModulePath (modName : Name) (currentFile : String) : IO (Option FileP
   let some root ← findProjectRoot parent
     | return none
 
-  -- Build file path
-  let mut filePath := root
-  for component in components do
-    filePath := filePath / component
-  filePath := filePath.withExtension "lean"
+  -- Try 1: Check in project root
+  let projectPath := buildModulePath root components
+  if ← projectPath.pathExists then
+    return some projectPath
 
-  -- Check if exists
-  if ← filePath.pathExists then
-    return some filePath
-  else
-    return none
+  -- Try 2: Check in .lake/packages/
+  let packagesDir := root / ".lake" / "packages"
+  if ← packagesDir.pathExists then
+    -- List all package directories
+    let entries ← packagesDir.readDir
+    for entry in entries do
+      if ← entry.path.isDir then
+        let pkgPath := buildModulePath entry.path components
+        if ← pkgPath.pathExists then
+          return some pkgPath
+
+  return none
 
 /-- Merge imports: remove the inlined import, add the module's imports, deduplicate. -/
 def mergeImports (original : Array ImportInfo) (toRemove : ImportInfo)

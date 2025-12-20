@@ -47,6 +47,8 @@ structure PassContext where
   steps : Array CompilationStep
   /-- Index of the marker command -/
   markerIdx : Nat
+  /-- Output file path for intermediate results (optional) -/
+  outputFile : Option String := none
 
 /-- Result of running a pass -/
 structure PassResult where
@@ -98,6 +100,7 @@ def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
     markerIdx := ctx.markerIdx
     verbose := ctx.verbose
     testCount
+    outputFile := ctx.outputFile
   }
 
 /-- Run passes in sequence according to their on-success actions -/
@@ -134,6 +137,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       headerEndPos := frontend.headerEndPos
       steps := frontend.steps
       markerIdx
+      outputFile
     }
     let result ← pass.run ctx
 
