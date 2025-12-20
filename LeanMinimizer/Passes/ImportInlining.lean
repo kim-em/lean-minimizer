@@ -126,24 +126,62 @@ def trackOpenScopes (commands : Array Syntax) : Array String := Id.run do
 
   return scopeStack
 
-/-- Analyze a module file for inlining.
+/-- Track open scopes from source text (without parsing).
+    Uses simple text matching for namespace/section/end keywords.
+    Returns array of scope names that need end statements. -/
+def trackOpenScopesFromText (body : String) : Array String := Id.run do
+  let mut scopeStack : Array String := #[]
+  let lines := body.splitOn "\n"
+
+  for line in lines do
+    let trimmed := line.trimAsciiStart.toString
+    -- Check for namespace
+    if trimmed.startsWith "namespace " then
+      let rest := (trimmed.drop 10).trimAsciiStart.toString
+      -- Extract identifier (first word)
+      let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
+      if !ident.isEmpty then
+        scopeStack := scopeStack.push ident
+    -- Check for section
+    else if trimmed.startsWith "section " then
+      let rest := (trimmed.drop 8).trimAsciiStart.toString
+      let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
+      if ident.isEmpty then
+        scopeStack := scopeStack.push ""
+      else
+        scopeStack := scopeStack.push ident
+    else if trimmed == "section" || trimmed.startsWith "section\n" || trimmed.startsWith "section " && (trimmed.drop 8).trimAsciiStart.toString.isEmpty then
+      -- Anonymous section
+      scopeStack := scopeStack.push ""
+    -- Check for end
+    else if trimmed.startsWith "end " || trimmed == "end" then
+      if !scopeStack.isEmpty then
+        scopeStack := scopeStack.pop
+
+  return scopeStack
+
+/-- Analyze a module file for inlining WITHOUT elaboration.
     Returns: (header syntax, body content, open scopes at end) -/
-unsafe def analyzeModuleForInlining (source : String) (fileName : String) :
+def analyzeModuleForInlining (source : String) (fileName : String) :
     IO (Syntax × String × Array String) := do
-  -- Run frontend to parse everything
-  let frontend ← runFrontend source fileName
+  let inputCtx := Parser.mkInputContext source fileName
+
+  -- Parse header only (no processHeader = no elaboration)
+  let (header, parserState, messages) ← Parser.parseHeader inputCtx
+
+  if messages.hasErrors then
+    throw <| IO.userError "Module has header errors"
 
   -- Find where header ends (strip trailing whitespace/comments)
-  let headerEndPos := findHeaderEnd source frontend.headerEndPos
+  let headerEndPos := findHeaderEnd source parserState.pos
 
   -- Extract body (everything after header)
   let body := String.Pos.Raw.extract source headerEndPos source.rawEndPos
 
-  -- Track open scopes from the parsed commands
-  let commands := frontend.steps.map (·.stx)
-  let openScopes := trackOpenScopes commands
+  -- Track open scopes using text-based matching (no elaboration needed)
+  let openScopes := trackOpenScopesFromText body
 
-  return (frontend.header, body, openScopes)
+  return (header, body, openScopes)
 
 /-- Build source with inlined import.
     Parameters:
