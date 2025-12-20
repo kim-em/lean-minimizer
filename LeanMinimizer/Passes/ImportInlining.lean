@@ -139,6 +139,45 @@ def trackOpenScopes (commands : Array Syntax) : Array String := Id.run do
 
   return scopeStack
 
+/-- Find the index of the closing bracket `]` matching the opening bracket at position `start`.
+    Returns `none` if no matching bracket is found. Handles nested brackets.
+    Used for stripping attributes like @[expose]. -/
+def findAttrClosingBracket (s : String) (start : Nat) : Option Nat := Id.run do
+  let chars := s.toList
+  if start >= chars.length then return none
+  let mut depth := 1
+  for i in [start + 1 : chars.length] do
+    let c := chars[i]!
+    if c == '[' then depth := depth + 1
+    else if c == ']' then
+      depth := depth - 1
+      if depth == 0 then return some i
+  return none
+
+/-- Strip leading attributes (@[...]) and modifiers (public, private, protected, scoped)
+    from a line of source code. Used to normalize lines before checking for section/namespace. -/
+def stripAttributesAndModifiers (line : String) : String := Id.run do
+  let mut s := line
+
+  -- Strip leading attributes: @[...] (potentially nested brackets)
+  while s.startsWith "@[" do
+    if let some endIdx := findAttrClosingBracket s 1 then
+      s := (s.drop (endIdx + 1)).trimAsciiStart.toString
+    else
+      break -- Malformed attribute, stop stripping
+
+  -- Strip modifiers (can appear in sequence): public, private, protected, scoped
+  let mut changed := true
+  while changed do
+    changed := false
+    for modifier in ["public ", "private ", "protected ", "scoped "] do
+      if s.startsWith modifier then
+        s := (s.drop modifier.length).trimAsciiStart.toString
+        changed := true
+        break
+
+  return s
+
 /-- Track open scopes from source text (without parsing).
     Uses simple text matching for namespace/section/end keywords.
     Returns array of scope names that need end statements. -/
@@ -148,26 +187,28 @@ def trackOpenScopesFromText (body : String) : Array String := Id.run do
 
   for line in lines do
     let trimmed := line.trimAsciiStart.toString
+    -- Strip attributes and modifiers to handle lines like "@[expose] public section"
+    let stripped := stripAttributesAndModifiers trimmed
+
     -- Check for namespace
-    if trimmed.startsWith "namespace " then
-      let rest := (trimmed.drop 10).trimAsciiStart.toString
+    if stripped.startsWith "namespace " then
+      let rest := (stripped.drop 10).trimAsciiStart.toString
       -- Extract identifier (first word)
       let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
       if !ident.isEmpty then
         scopeStack := scopeStack.push ident
-    -- Check for section
-    else if trimmed.startsWith "section " then
-      let rest := (trimmed.drop 8).trimAsciiStart.toString
-      let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
-      if ident.isEmpty then
-        scopeStack := scopeStack.push ""
-      else
-        scopeStack := scopeStack.push ident
-    else if trimmed == "section" || trimmed.startsWith "section\n" || trimmed.startsWith "section " && (trimmed.drop 8).trimAsciiStart.toString.isEmpty then
+    -- Check for section (with or without name)
+    -- Handle "section", "section ", "section Name"
+    else if stripped == "section" then
       -- Anonymous section
       scopeStack := scopeStack.push ""
+    else if stripped.startsWith "section " then
+      -- "section " - extract name if present
+      let rest := (stripped.drop 8).trimAsciiStart.toString
+      let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
+      scopeStack := scopeStack.push ident
     -- Check for end
-    else if trimmed.startsWith "end " || trimmed == "end" then
+    else if stripped.startsWith "end " || stripped == "end" then
       if !scopeStack.isEmpty then
         scopeStack := scopeStack.pop
 
@@ -313,8 +354,13 @@ unsafe def importInliningPass : Pass where
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
             return { source := newSource, changed := true, action := .restart }
           else
-            if ctx.verbose then
-              IO.eprintln s!"    Inlining breaks compilation, skipping"
+            -- Fatal error: import inlining should theoretically always succeed
+            if let some outPath := ctx.outputFile then
+              IO.FS.writeFile outPath newSource
+            IO.eprintln s!"\n\nFATAL: Import inlining failed for {imp.moduleName}"
+            IO.eprintln s!"This should never happen - import inlining should always succeed."
+            IO.eprintln s!"The failed source has been written to the output file for debugging."
+            IO.Process.exit 1
         catch e =>
           if ctx.verbose then
             IO.eprintln s!"    Error analyzing module: {e}, skipping"

@@ -5,6 +5,7 @@ These modules are used as test inputs by the minimize tool.
 import LeanMinimizerTest.Golden.BodyReplacementInlined.B
 import LeanMinimizerTest.Golden.BodyReplacementInlined.C
 import LeanMinimizerTest.Golden.ImportInlining.Simple
+import LeanMinimizerTest.Golden.ImportInliningPublicSection.Module
 import LeanMinimizerTest.Golden.ImportInliningComplex.A
 import LeanMinimizerTest.Golden.ImportInliningComplex.B
 import LeanMinimizerTest.Golden.ImportInliningComplex.C
