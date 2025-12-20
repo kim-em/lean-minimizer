@@ -206,6 +206,10 @@ unsafe def importMinimizationPass : Pass where
           let mut newImports := imports.filter fun x => x != imp
           for transImp in transitiveImports do
             let transInfo := leanImportToInfo transImp
+            -- Skip Init - it's always implicitly available and causes infinite loops
+            -- when it gets added and then removed repeatedly
+            if transInfo.moduleName == `Init then
+              continue
             -- Check if already present
             let alreadyPresent := newImports.any fun existing =>
               existing.moduleName == transInfo.moduleName

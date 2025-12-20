@@ -87,7 +87,10 @@ def mergeImports (original : Array ImportInfo) (toRemove : ImportInfo)
   let mut result := original.filter fun x => x.moduleName != toRemove.moduleName
 
   -- Add new imports, avoiding duplicates by module name
+  -- Skip Init as it's always implicitly available
   for imp in toAdd do
+    if imp.moduleName == `Init then
+      continue
     let alreadyPresent := result.any fun x => x.moduleName == imp.moduleName
     if !alreadyPresent then
       result := result.push imp
