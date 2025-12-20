@@ -74,12 +74,13 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Opt
     let stxStr := step.stx.reprint.getD ""
     stxStr.containsSubstr marker
 
-  -- For #guard_msgs, check if the previous command is a docstring
+  -- For #guard_msgs, check if the previous command is a standalone docstring
+  -- (not a declaration with a docstring attached)
   if marker == "#guard_msgs" && idx > 0 then
     if h : idx - 1 < steps.size then
       let prevStep := steps[idx - 1]
-      let prevStr := prevStep.stx.reprint.getD ""
-      if prevStr.trimAsciiStart.toString.startsWith "/-" then
+      -- Only match if the previous step is a docstring command, not a declaration
+      if prevStep.stx.isOfKind `Lean.Parser.Command.docComment then
         return idx - 1
 
   return idx
@@ -101,7 +102,8 @@ def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
 
 /-- Run passes in sequence according to their on-success actions -/
 unsafe def runPasses (passes : Array Pass) (input : String)
-    (fileName : String) (marker : String) (verbose : Bool) : IO String := do
+    (fileName : String) (marker : String) (verbose : Bool)
+    (outputFile : Option String := none) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -109,6 +111,10 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut passIdx : Nat := 0
   let maxIterations := 1000  -- Safety limit
   let mut iterations := 0
+
+  -- Write initial source to output file if specified
+  if let some outPath := outputFile then
+    IO.FS.writeFile outPath source
 
   while passIdx < passes.size && iterations < maxIterations do
     iterations := iterations + 1
@@ -138,6 +144,11 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       continue
 
     source := result.source
+
+    -- Write updated source to output file if specified
+    if let some outPath := outputFile then
+      IO.FS.writeFile outPath source
+
     match result.action with
     | .restart =>
       if verbose then

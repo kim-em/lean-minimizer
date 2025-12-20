@@ -135,9 +135,11 @@ def replaceExtendsClause (source : String) (extendsRange : String.Pos.Raw × Str
   let after := String.Pos.Raw.extract source extendsRange.2 source.rawEndPos
   before ++ renderExtendsClause newParents ++ after
 
-/-- Run lean on source and return (exitCode, stderr) -/
+/-- Run lean on source and return (exitCode, output).
+    Note: Lean outputs errors to stdout, not stderr. -/
 def runLeanOnSource (source : String) (fileName : String) : IO (UInt32 × String) := do
-  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-extends-{← IO.monoMsNow}.lean"
+  let rand ← IO.rand 0 999999999
+  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-extends-{← IO.monoNanosNow}-{rand}.lean"
   IO.FS.writeFile tempFile source
 
   let leanPath ← IO.getEnv "LEAN_PATH"
@@ -159,7 +161,8 @@ def runLeanOnSource (source : String) (fileName : String) : IO (UInt32 × String
   }
 
   IO.FS.removeFile tempFile
-  return (result.exitCode, result.stderr)
+  -- Lean outputs errors to stdout, not stderr
+  return (result.exitCode, result.stdout)
 
 /-- Test if source compiles using subprocess for memory isolation -/
 def testSourceCompilesForExtends (source : String) (fileName : String) : IO Bool := do
@@ -200,12 +203,12 @@ def deleteLines (source : String) (lineNumbers : Array Nat) : String := Id.run d
     try removing those lines. Returns (success, final_source). -/
 def tryCompileWithSorryFieldRemoval (source : String) (fileName : String) (verbose : Bool) :
     IO (Bool × String) := do
-  let (exitCode, stderr) ← runLeanOnSource source fileName
+  let (exitCode, output) ← runLeanOnSource source fileName
   if exitCode == 0 then
     return (true, source)
 
   -- Compilation failed - check if errors are on sorry-field lines
-  let errorLines := extractErrorLineNumbers stderr
+  let errorLines := extractErrorLineNumbers output
   if errorLines.isEmpty then
     return (false, source)
 

@@ -65,9 +65,13 @@
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 4] Running: Import Minimization
+[Pass 4] Running: Extends Simplification
+  Looking for structures with extends clauses...
+  No extends simplifications possible
+  No changes, moving to next pass
+[Pass 5] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 5] Running: Import Inlining
+[Pass 6] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass

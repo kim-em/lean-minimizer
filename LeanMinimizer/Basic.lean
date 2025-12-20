@@ -47,6 +47,11 @@ Options:
   --verbose
     Print progress information during minimization.
 
+  -o, --output <FILE>
+    Write output to FILE instead of stdout. The file is updated after
+    each successful minimization step, allowing you to follow along
+    in an editor as the minimization progresses.
+
   --no-module-removal
     Disable the module system removal pass.
 
@@ -96,6 +101,8 @@ structure Args where
   marker : String := "#guard_msgs"
   verbose : Bool := false
   help : Bool := false
+  /-- Output file to write intermediate results to -/
+  outputFile : Option String := none
   /-- Disable the module system removal pass -/
   noModuleRemoval : Bool := false
   /-- Disable the deletion pass -/
@@ -124,6 +131,10 @@ def parseArgs (args : List String) : Except String Args := do
     | "--verbose" :: rest => go rest { acc with verbose := true }
     | "--marker" :: pattern :: rest => go rest { acc with marker := pattern }
     | "--marker" :: [] => .error "--marker requires an argument"
+    | "-o" :: path :: rest => go rest { acc with outputFile := some path }
+    | "--output" :: path :: rest => go rest { acc with outputFile := some path }
+    | "-o" :: [] => .error "-o requires an argument"
+    | "--output" :: [] => .error "--output requires an argument"
     | "--no-delete" :: rest => go rest { acc with noDelete := true }
     | "--no-module-removal" :: rest => go rest { acc with noModuleRemoval := true }
     | "--no-sorry" :: rest => go rest { acc with noSorry := true }
@@ -352,8 +363,9 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 /-- Test if source compiles by running lean in a subprocess.
     This isolates memory usage - when the subprocess exits, all Lean caches are freed. -/
 def testCompilesSubprocess (source : String) (_fileName : String) : IO Bool := do
-  -- Create temp file (fileName is kept for API compatibility but not used in temp path)
-  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-test-{← IO.monoMsNow}.lean"
+  -- Create temp file with timestamp and random component to avoid collisions in parallel tests
+  let rand ← IO.rand 0 999999999
+  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-test-{← IO.monoNanosNow}-{rand}.lean"
   IO.FS.writeFile tempFile source
 
   -- Get environment variables for lean

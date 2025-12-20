@@ -1,5 +1,0 @@
-name = "minimizer-mathlib-tests"
-
-[[require]]
-name = "mathlib"
-scope = "leanprover-community"

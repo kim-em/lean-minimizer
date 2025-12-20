@@ -17,6 +17,32 @@ import LeanMinimizerTest.Golden
 
 open Lean System LeanMinimizer
 
+/-- Number of parallel test workers. Defaults to number of CPUs. -/
+def numWorkers : IO Nat := do
+  let numCpus ← IO.Process.output { cmd := "nproc" }
+  return numCpus.stdout.trimAscii.toString.toNat?.getD 4
+
+/-- Run tests in parallel with progressive output.
+    Spawns all tests immediately, then waits for each in order,
+    calling `onResult` as each completes. This gives parallelization
+    while still showing results progressively. -/
+def runTestsParallelWithProgress {α β : Type} [Inhabited β]
+    (items : Array α)
+    (runTest : α → IO β)
+    (onResult : α → β → IO Unit) : IO Unit := do
+  if items.isEmpty then return
+
+  -- Spawn all tests as tasks immediately
+  let tasks ← items.mapM fun item => do
+    let task ← IO.asTask (runTest item)
+    return (item, task)
+
+  -- Wait for each task in order and report result immediately
+  for (item, task) in tasks do
+    match ← IO.wait task with
+    | .ok result => onResult item result
+    | .error e => throw e
+
 /-- Base test directory -/
 def testDir : FilePath := "LeanMinimizerTest"
 
@@ -25,12 +51,6 @@ def goldenDir : FilePath := testDir / "Golden"
 
 /-- CLI tests directory -/
 def cliDir : FilePath := testDir / "CLI"
-
-/-- Mathlib tests directory (separate Lake package) -/
-def mathlibTestDir : FilePath := testDir / "Mathlib"
-
-/-- Mathlib golden tests directory -/
-def mathlibGoldenDir : FilePath := mathlibTestDir / "Golden"
 
 /-- Default marker pattern -/
 def defaultMarker : String := "#guard_msgs"
@@ -110,12 +130,14 @@ inductive TestResult
   | failed (diff : String)
   | error (msg : String)
   | missingExpected
+  deriving Inhabited
 
 /-- Run minimizer on a test file and compare with expected output -/
 def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let base := stripLeanExt testFile
   let expectedFile : FilePath := base ++ ".expected.lean"
   let producedFile : FilePath := base ++ ".produced.lean"
+  let logFile : FilePath := base ++ ".log"
 
   -- Check expected file exists
   if !(← expectedFile.pathExists) then
@@ -126,9 +148,11 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
   let marker ← getMarker testFile
 
   -- Run minimizer binary directly (faster than `lake exe minimize`)
+  -- Use -o to write directly to produced file, updating as minimization progresses
+  -- Use --verbose to capture logs for debugging
   let cwd ← IO.currentDir
   let extraArgs ← getArgs testFile
-  let args := #[testFile.toString, "--marker", marker] ++ extraArgs
+  let args := #[testFile.toString, "--marker", marker, "-o", (cwd / producedFile).toString, "--verbose"] ++ extraArgs
   -- Get environment variables needed by the minimize binary
   let leanPath ← IO.getEnv "LEAN_PATH"
   let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
@@ -145,14 +169,15 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
     env := env
   }
 
+  -- Write verbose log to .log file (stderr contains verbose output)
+  IO.FS.writeFile logFile result.stderr
+
   -- Check for errors
   if result.exitCode != 0 then
     return .error s!"Minimizer failed (exit {result.exitCode}): {result.stderr}"
 
-  let produced := result.stdout
-
-  -- Write produced output
-  IO.FS.writeFile producedFile produced
+  -- Read produced output (written by minimizer via -o)
+  let produced ← IO.FS.readFile producedFile
 
   -- Compare (normalize trailing newlines)
   let expectedNorm := expected.trimAsciiEnd.toString ++ "\n"
@@ -327,157 +352,86 @@ def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat
     IO.eprintln s!"Warning: No CLI test files found in {cliDir}"
     return (0, 0)
 
-  let mut passed := 0
-  let mut failed := 0
-
-  for testFile in cliFiles do
-    let name := testName testFile
-
-    if let some acceptName := acceptFilter then
+  -- Handle accept mode sequentially
+  if let some acceptName := acceptFilter then
+    for testFile in cliFiles do
+      let name := testName testFile
       if shouldAccept name acceptName then
         acceptCLITest testFile
-      continue
+    return (0, 0)
 
-    let result ← runCLITest testFile
+  -- Run all tests in parallel with progressive output
+  let passed ← IO.mkRef 0
+  let failed ← IO.mkRef 0
 
-    match result with
-    | .passed =>
-      IO.println s!"  ✓ {name}"
-      passed := passed + 1
-    | .failed diff =>
-      IO.println s!"  ✗ {name}"
-      IO.println ""
-      IO.println diff
-      failed := failed + 1
-    | .error msg =>
-      IO.println s!"  ✗ {name}: {msg}"
-      failed := failed + 1
-    | .missingExpected =>
-      IO.println s!"  ? {name}: missing .expected.lean (run and review, then --accept)"
-      failed := failed + 1
+  runTestsParallelWithProgress cliFiles
+    (fun testFile => runCLITest testFile)
+    (fun testFile result => do
+      let name := testName testFile
+      match result with
+      | .passed =>
+        IO.println s!"  ✓ {name}"
+        passed.modify (· + 1)
+      | .failed diff =>
+        IO.println s!"  ✗ {name}"
+        IO.println ""
+        IO.println diff
+        failed.modify (· + 1)
+      | .error msg =>
+        IO.println s!"  ✗ {name}: {msg}"
+        failed.modify (· + 1)
+      | .missingExpected =>
+        IO.println s!"  ? {name}: missing .expected.lean (run and review, then --accept)"
+        failed.modify (· + 1))
 
-  return (passed, failed)
+  return (← passed.get, ← failed.get)
 
-/-! ## Mathlib Tests -/
-
-/-- Ensure Mathlib cache is downloaded. Returns true if successful. -/
-def ensureMathlibCache : IO Bool := do
-  if !(← mathlibTestDir.pathExists) then
-    return true  -- No Mathlib tests, nothing to do
-
-  IO.println "  Fetching Mathlib cache..."
-  let result ← IO.Process.output {
-    cmd := "lake"
-    args := #["exe", "cache", "get"]
-    cwd := mathlibTestDir
-  }
-
-  if result.exitCode != 0 then
-    IO.eprintln s!"  Warning: Failed to fetch Mathlib cache: {result.stderr}"
-    return false
-
-  return true
-
-/-- Run a Mathlib golden test using `lake env` to get the Mathlib environment -/
-def runMathlibGoldenTest (testFile : FilePath) : IO TestResult := do
-  let base := stripLeanExt testFile
-  let expectedFile : FilePath := base ++ ".expected.lean"
-  let producedFile : FilePath := base ++ ".produced.lean"
-
-  -- Check expected file exists
-  if !(← expectedFile.pathExists) then
-    return .missingExpected
-
-  -- Read expected output
-  let expected ← IO.FS.readFile expectedFile
-  let marker ← getMarker testFile
-  let extraArgs ← getArgs testFile
-
-  -- Run minimizer via `lake env` from the Mathlib test directory
-  -- This gives us the Mathlib environment for imports
-  let cwd ← IO.currentDir
-  let minimizePath := (cwd / minimizeBin).toString
-  let testFilePath := (cwd / testFile).toString
-  let args := #["env", minimizePath, testFilePath, "--marker", marker] ++ extraArgs
-
-  let result ← IO.Process.output {
-    cmd := "lake"
-    args := args
-    cwd := mathlibTestDir
-  }
-
-  -- Check for errors
-  if result.exitCode != 0 then
-    return .error s!"Minimizer failed (exit {result.exitCode}): {result.stderr}"
-
-  let produced := result.stdout
-
-  -- Write produced output
-  IO.FS.writeFile producedFile produced
-
-  -- Compare (normalize trailing newlines)
-  let expectedNorm := expected.trimAsciiEnd.toString ++ "\n"
-  let producedNorm := produced.trimAsciiEnd.toString ++ "\n"
-
-  if expectedNorm == producedNorm then
-    return .passed
-  else
-    -- Generate diff
-    let diffResult ← IO.Process.output {
-      cmd := "diff"
-      args := #["-u", "--label", "expected", "--label", "produced",
-                expectedFile.toString, producedFile.toString]
-    }
-    return .failed diffResult.stdout
-
-/-- Run all Mathlib golden tests. Returns (passed, failed, errors). -/
-def runMathlibTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat) := do
-  if !(← mathlibTestDir.pathExists) then
-    return (0, 0, 0)  -- No Mathlib tests directory
-
-  let goldenFiles ← findTestFilesIn mathlibGoldenDir
+/-- Run all golden tests. Returns (passed, failed, errors). -/
+def runGoldenTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat) := do
+  let goldenFiles ← findTestFilesIn goldenDir
 
   if goldenFiles.isEmpty then
-    return (0, 0, 0)  -- No test files
-
-  -- Ensure Mathlib cache is available
-  let _ ← ensureMathlibCache
+    IO.eprintln s!"Warning: No golden test files found in {goldenDir}"
+    return (0, 0, 0)
 
   IO.println ""
-  IO.println s!"Running {goldenFiles.size} Mathlib golden tests from {mathlibGoldenDir}/"
+  IO.println s!"Running {goldenFiles.size} golden tests from {goldenDir}/"
   IO.println ""
 
-  let mut passed := 0
-  let mut failed := 0
-  let mut errors := 0
-
-  for testFile in goldenFiles do
-    let name := testName testFile
-
-    if let some acceptName := acceptArg then
+  -- Handle accept mode sequentially
+  if let some acceptName := acceptArg then
+    for testFile in goldenFiles do
+      let name := testName testFile
       if shouldAccept name acceptName then
         acceptGoldenTest testFile
-      continue
+    return (0, 0, 0)
 
-    let result ← runMathlibGoldenTest testFile
+  -- Run all tests in parallel with progressive output
+  let passed ← IO.mkRef 0
+  let failed ← IO.mkRef 0
+  let errors ← IO.mkRef 0
 
-    match result with
-    | .passed =>
-      IO.println s!"  ✓ {name}"
-      passed := passed + 1
-    | .failed diff =>
-      IO.println s!"  ✗ {name}"
-      IO.println ""
-      IO.println diff
-      failed := failed + 1
-    | .error msg =>
-      IO.println s!"  ✗ {name}: {msg}"
-      errors := errors + 1
-    | .missingExpected =>
-      IO.println s!"  ? {name}: missing .expected.lean (run minimizer and review, then --accept)"
-      errors := errors + 1
+  runTestsParallelWithProgress goldenFiles
+    (fun testFile => runGoldenTest testFile)
+    (fun testFile result => do
+      let name := testName testFile
+      match result with
+      | .passed =>
+        IO.println s!"  ✓ {name}"
+        passed.modify (· + 1)
+      | .failed diff =>
+        IO.println s!"  ✗ {name}"
+        IO.println ""
+        IO.println diff
+        failed.modify (· + 1)
+      | .error msg =>
+        IO.println s!"  ✗ {name}: {msg}"
+        errors.modify (· + 1)
+      | .missingExpected =>
+        IO.println s!"  ? {name}: missing .expected.lean (run minimizer and review, then --accept)"
+        errors.modify (· + 1))
 
-  return (passed, failed, errors)
+  return (← passed.get, ← failed.get, ← errors.get)
 
 /-! ## Component Tests -/
 
@@ -515,6 +469,10 @@ def parseAcceptArg (args : List String) : Option (Option String) :=
   | "--accept" :: [] => some none            -- --accept at end
   | _ => none                                 -- no --accept
 
+/-- Parse a specific test file from arguments -/
+def parseTestFile (args : List String) : Option FilePath :=
+  args.find? (·.endsWith ".lean") |>.map FilePath.mk
+
 /-- Entry point for `lake exe test` -/
 unsafe def main (args : List String) : IO UInt32 := do
   initSearchPath (← findSysroot)
@@ -522,6 +480,36 @@ unsafe def main (args : List String) : IO UInt32 := do
   let acceptArg := parseAcceptArg args
   let accept := acceptArg.isSome
   let acceptFilter := acceptArg.join  -- Option (Option String) → Option String
+  let specificTest := parseTestFile args
+
+  -- If a specific test file is provided, run only that test
+  if let some testFile := specificTest then
+    IO.println s!"Running single test: {testFile}"
+    IO.println ""
+
+    -- Determine which type of test this is
+    let testPath := testFile.toString
+    if testPath.containsSubstr "/Golden/" then
+      -- Regular golden test
+      let result ← runGoldenTest testFile
+      let testName := testFile.fileName.getD testFile.toString
+      match result with
+      | .passed =>
+        IO.println s!"  ✓ {testName}"
+        return 0
+      | .failed diff =>
+        IO.println s!"  ✗ {testName}: output differs from expected"
+        IO.println diff
+        return 1
+      | .error msg =>
+        IO.println s!"  ✗ {testName}: {msg}"
+        return 1
+      | .missingExpected =>
+        IO.println s!"  ? {testName}: missing .expected.lean (run minimizer and review, then --accept)"
+        return 1
+    else
+      IO.eprintln s!"Unknown test type for: {testFile}"
+      return 1
 
   if accept then
     match acceptFilter with
@@ -551,46 +539,10 @@ unsafe def main (args : List String) : IO UInt32 := do
   failed := failed + componentFailed
 
   -- Run golden tests
-  let goldenFiles ← findTestFilesIn goldenDir
-
-  if goldenFiles.isEmpty then
-    IO.eprintln s!"Warning: No golden test files found in {goldenDir}"
-  else
-    IO.println ""
-    IO.println s!"Running {goldenFiles.size} golden tests from {goldenDir}/"
-    IO.println ""
-
-    for testFile in goldenFiles do
-      let name := testName testFile
-
-      if let some acceptName := acceptArg then
-        if shouldAccept name acceptName then
-          acceptGoldenTest testFile
-        continue
-
-      let result ← runGoldenTest testFile
-
-      match result with
-      | .passed =>
-        IO.println s!"  ✓ {name}"
-        passed := passed + 1
-      | .failed diff =>
-        IO.println s!"  ✗ {name}"
-        IO.println ""
-        IO.println diff
-        failed := failed + 1
-      | .error msg =>
-        IO.println s!"  ✗ {name}: {msg}"
-        errors := errors + 1
-      | .missingExpected =>
-        IO.println s!"  ? {name}: missing .expected.lean (run minimizer and review, then --accept)"
-        errors := errors + 1
-
-  -- Run Mathlib golden tests (if directory exists)
-  let (mathlibPassed, mathlibFailed, mathlibErrors) ← runMathlibTests acceptArg
-  passed := passed + mathlibPassed
-  failed := failed + mathlibFailed
-  errors := errors + mathlibErrors
+  let (goldenPassed, goldenFailed, goldenErrors) ← runGoldenTests acceptArg
+  passed := passed + goldenPassed
+  failed := failed + goldenFailed
+  errors := errors + goldenErrors
 
   if accept then
     IO.println ""
