@@ -4,6 +4,7 @@ import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
 import LeanMinimizer.Passes.BodyReplacement
+import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining
 
@@ -17,6 +18,7 @@ unsafe def buildPassList (args : Args) : Array Pass :=
   |> (if args.noDelete then id else (·.push deletionPass))
   |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
   |> (if args.noSorry then id else (·.push bodyReplacementPass))
+  |> (if args.noTextSubst then id else (·.push textSubstitutionPass))
   |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
   |> (if args.noImportInlining then id else (·.push importInliningPass))
 

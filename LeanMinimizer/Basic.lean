@@ -62,6 +62,9 @@ Options:
   --no-import-inlining
     Disable the import inlining pass.
 
+  --no-text-subst
+    Disable the text substitution pass.
+
   --help
     Show this help message.
 
@@ -100,6 +103,8 @@ structure Args where
   noImportMinimization : Bool := false
   /-- Disable the import inlining pass -/
   noImportInlining : Bool := false
+  /-- Disable the text substitution pass -/
+  noTextSubst : Bool := false
 
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
@@ -119,6 +124,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-sorry" :: rest => go rest { acc with noSorry := true }
     | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
     | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
+    | "--no-text-subst" :: rest => go rest { acc with noTextSubst := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
@@ -313,21 +319,25 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
     if idx < state.markerIdx then
       let cmd := state.allCommands[idx]!
       let src := cmd.getSyntaxSource state.input
-      -- Add newline separator between commands if needed
-      if needsSep && !result.endsWith "\n" then
-        result := result ++ "\n"
+      -- Add blank line between commands
+      if needsSep then
+        if !result.endsWith "\n" then
+          result := result ++ "\n\n"
+        else if !result.endsWith "\n\n" then
+          result := result ++ "\n"
       result := result ++ src
-      -- Add extra blank line after section/namespace end statements
-      if cmd.stx.isOfKind `Lean.Parser.Command.end then
-        result := result ++ "\n"
       needsSep := true
 
   -- Always include marker and everything after (preserve full source including docstrings)
   for i in [state.markerIdx : state.allCommands.size] do
     let cmd := state.allCommands[i]!
     let src := cmd.getSyntaxSource state.input
-    if needsSep && !result.endsWith "\n" then
-      result := result ++ "\n"
+    -- Add blank line between commands
+    if needsSep then
+      if !result.endsWith "\n" then
+        result := result ++ "\n\n"
+      else if !result.endsWith "\n\n" then
+        result := result ++ "\n"
     result := result ++ src
     needsSep := true
 

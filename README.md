@@ -17,6 +17,7 @@ lake exe minimize <file.lean> [options]
 - `--no-import-minimization`: Disable the import minimization pass
 - `--no-import-inlining`: Disable the import inlining pass
 - `--no-sorry`: Disable the body replacement pass
+- `--no-text-subst`: Disable the text substitution pass
 - `--help`: Show help message
 
 ### Example
@@ -76,12 +77,25 @@ The Prop subexpression detection uses the InfoTree to find:
 - Term expressions whose type is `Prop` (i.e., proofs)
 - Tactic blocks (`by ...`) that represent proof terms
 
-### Pass 5: Import Minimization
+### Pass 5: Text Substitution
+
+Performs textual replacements to simplify declarations:
+
+1. **Keyword replacement**: `lemma` → `theorem`
+2. **Type simplification**: `Type*` → `Type _`, then `Type _`/`Type u` → `Type`
+3. **Unicode normalization**: `ℕ` → `Nat`, `ℤ` → `Int`, `ℚ` → `Rat`
+4. **Attribute removal**: Removes `@[...]` attribute blocks
+5. **Modifier removal**: Removes `unsafe`, `protected`, `private`, `noncomputable`
+6. **Priority removal**: Removes priorities from attributes (`@[simp 100]` → `@[simp]`) and instances (`(priority := high)` → removed)
+
+Each mini-pass tries all replacements at once first; if that fails, it applies them one-by-one from bottom to top. Comments and strings are preserved.
+
+### Pass 6: Import Minimization
 
 1. Tries to remove each import entirely
 2. For imports that can't be removed, tries to replace them with their transitive imports (useful when only a subset of a module's dependencies are needed)
 
-### Pass 6: Import Inlining
+### Pass 7: Import Inlining
 
 Inlines project-local imports to create self-contained test files:
 

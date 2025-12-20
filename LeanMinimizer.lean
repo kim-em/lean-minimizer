@@ -7,5 +7,6 @@ import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
 import LeanMinimizer.Passes.BodyReplacement
+import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining

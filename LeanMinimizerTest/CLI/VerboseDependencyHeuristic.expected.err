@@ -61,9 +61,13 @@
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Import Minimization
+[Pass 3] Running: Text Substitution
+  Running text substitution mini-passes...
+  No text substitutions possible
+  No changes, moving to next pass
+[Pass 4] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 4] Running: Import Inlining
+[Pass 5] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
