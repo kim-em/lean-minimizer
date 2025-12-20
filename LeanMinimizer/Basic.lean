@@ -53,6 +53,9 @@ Options:
   --no-delete
     Disable the command deletion pass.
 
+  --no-sorry
+    Disable the body replacement pass (replacing bodies with sorry).
+
   --no-import-minimization
     Disable the import minimization pass.
 
@@ -91,6 +94,8 @@ structure Args where
   noModuleRemoval : Bool := false
   /-- Disable the deletion pass -/
   noDelete : Bool := false
+  /-- Disable the body replacement pass -/
+  noSorry : Bool := false
   /-- Disable the import minimization pass -/
   noImportMinimization : Bool := false
   /-- Disable the import inlining pass -/
@@ -111,6 +116,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--marker" :: [] => .error "--marker requires an argument"
     | "--no-delete" :: rest => go rest { acc with noDelete := true }
     | "--no-module-removal" :: rest => go rest { acc with noModuleRemoval := true }
+    | "--no-sorry" :: rest => go rest { acc with noSorry := true }
     | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
     | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
     | arg :: rest =>

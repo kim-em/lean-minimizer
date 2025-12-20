@@ -16,6 +16,7 @@ lake exe minimize <file.lean> [options]
 - `--no-delete`: Disable the command deletion pass
 - `--no-import-minimization`: Disable the import minimization pass
 - `--no-import-inlining`: Disable the import inlining pass
+- `--no-sorry`: Disable the body replacement pass
 - `--help`: Show help message
 
 ### Example
@@ -61,12 +62,21 @@ The dependency analysis makes minimization much faster by trying to remove unrea
 
 Removes adjacent empty scope pairs (`section X...end X` or `namespace X...end X`) that may remain after command deletion.
 
-### Pass 4: Import Minimization
+### Pass 4: Body Replacement
+
+Replaces declaration bodies with `sorry` to simplify the test case:
+
+1. Works declaration by declaration, starting from just above the invariant section and moving upward
+2. For each declaration, tries replacing the entire body with `sorry`
+3. For `where`-style structure definitions, tries replacing individual field values with `sorry`
+4. Returns to the first pass after each successful replacement (since simplified bodies may enable further deletions)
+
+### Pass 5: Import Minimization
 
 1. Tries to remove each import entirely
 2. For imports that can't be removed, tries to replace them with their transitive imports (useful when only a subset of a module's dependencies are needed)
 
-### Pass 5: Import Inlining
+### Pass 6: Import Inlining
 
 Inlines project-local imports to create self-contained test files:
 

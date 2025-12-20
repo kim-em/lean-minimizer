@@ -1,0 +1,223 @@
+/-
+Copyright (c) 2024 Lean FRO, LLC. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+Authors: Kim Morrison
+-/
+import LeanMinimizer.Pass
+import LeanMinimizer.Dependencies
+
+/-!
+# Body Replacement Pass
+
+This pass replaces declaration bodies with `sorry` to simplify minimized files.
+
+For each declaration (working upward from just above the invariant):
+1. Try replacing the entire body with `sorry`
+2. If that fails, try replacing field values in where-structures with `sorry`
+
+When replacing subexpressions, we process them in reverse position order
+to avoid invalidating source positions.
+-/
+
+namespace LeanMinimizer
+
+open Lean Elab Frontend Parser
+
+/-! ## Declaration body detection -/
+
+/-- Check if syntax is a declaration kind that has a body we can replace -/
+def isDeclarationKind (stx : Syntax) : Bool :=
+  stx.isOfKind `Lean.Parser.Command.declaration
+
+/-- Find the inner declaration (theorem, def, etc.) from a declaration command.
+    Declaration syntax is: declModifiers (abbrev | definition | theorem | ...) -/
+def getInnerDecl? (stx : Syntax) : Option Syntax := do
+  if !isDeclarationKind stx then
+    failure
+  if stx.getNumArgs < 2 then
+    failure
+  return stx.getArg 1
+
+/-- Find declVal syntax within an inner declaration (theorem/def/etc).
+    declVal is one of: declValSimple | declValEqns | whereStructInst -/
+def findDeclVal? (inner : Syntax) : Option Syntax := do
+  for i in [:inner.getNumArgs] do
+    let child := inner.getArg i
+    if child.isOfKind `Lean.Parser.Command.declValSimple ||
+       child.isOfKind `Lean.Parser.Command.declValEqns ||
+       child.isOfKind `Lean.Parser.Command.whereStructInst then
+      return child
+  failure
+
+/-- Get the body syntax from declValSimple (`:= body`).
+    declValSimple has structure: ":=" body termination? whereDecls? -/
+def getDeclValSimpleBody? (declVal : Syntax) : Option Syntax := do
+  if !declVal.isOfKind `Lean.Parser.Command.declValSimple then
+    failure
+  if declVal.getNumArgs < 2 then
+    failure
+  return declVal.getArg 1
+
+/-- Get the body range from declValSimple -/
+def getDeclValSimpleBodyRange? (declVal : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let body ← getDeclValSimpleBody? declVal
+  let startPos ← body.getPos?
+  let endPos ← body.getTailPos?
+  return (startPos, endPos)
+
+/-- Get body range from whereStructInst.
+    whereStructInst has structure: "where" structInstFields -/
+def getWhereStructInstBodyRange? (declVal : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  if !declVal.isOfKind `Lean.Parser.Command.whereStructInst then
+    failure
+  -- The whole whereStructInst is the "body" we might want to replace
+  let startPos ← declVal.getPos?
+  let endPos ← declVal.getTailPos?
+  return (startPos, endPos)
+
+/-- Get the body range for a declaration.
+    Returns the range of the part we want to replace with sorry. -/
+def getDeclBodyRange? (stx : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let inner ← getInnerDecl? stx
+  let declVal ← findDeclVal? inner
+  getDeclValSimpleBodyRange? declVal <|> getWhereStructInstBodyRange? declVal
+
+/-- Check if a body is already just `sorry` -/
+def bodyIsSorry (source : String) (startPos endPos : String.Pos.Raw) : Bool :=
+  let body := String.Pos.Raw.extract source startPos endPos
+  body.trimAscii.toString == "sorry"
+
+/-- Get field value ranges from whereStructInst for individual replacement.
+    Returns array of (startPos, endPos) for each field value. -/
+partial def getWhereFieldValueRanges (declVal : Syntax) : Array (String.Pos.Raw × String.Pos.Raw) :=
+  if !declVal.isOfKind `Lean.Parser.Command.whereStructInst then
+    #[]
+  else
+    -- whereStructInst has: "where" structInstFields
+    -- structInstFields contains structInstField nodes
+    -- Each structInstField has: structInstLVal, then a node containing structInstFieldDef
+    -- structInstFieldDef has: ":=" val
+    let rec collectFields (stx : Syntax) (acc : Array (String.Pos.Raw × String.Pos.Raw)) :
+        Array (String.Pos.Raw × String.Pos.Raw) :=
+      let acc' := if stx.isOfKind `Lean.Parser.Term.structInstFieldDef then
+        -- structInstFieldDef has: ":=" optNewline val
+        if stx.getNumArgs >= 3 then
+          let val := stx.getArg 2
+          match val.getPos?, val.getTailPos? with
+          | some startPos, some endPos => acc.push (startPos, endPos)
+          | _, _ => acc
+        else acc
+      else acc
+      (List.range stx.getNumArgs).foldl (init := acc') fun a i => collectFields (stx.getArg i) a
+    collectFields declVal #[]
+
+/-! ## Source manipulation -/
+
+/-- Replace a source range with `sorry` -/
+def replaceWithSorry (source : String) (startPos endPos : String.Pos.Raw) : String :=
+  let before := String.Pos.Raw.extract source ⟨0⟩ startPos
+  let after := String.Pos.Raw.extract source endPos source.rawEndPos
+  before ++ "sorry" ++ after
+
+/-- Test if source compiles successfully using subprocess for memory isolation -/
+def testSourceCompilesForSorry (source : String) (fileName : String) : IO Bool := do
+  -- Create temp file
+  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-sorry-{← IO.monoMsNow}.lean"
+  IO.FS.writeFile tempFile source
+
+  -- Get environment variables for lean
+  let leanPath ← IO.getEnv "LEAN_PATH"
+  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
+  let path ← IO.getEnv "PATH"
+
+  let env : Array (String × Option String) := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", leanSysroot),
+    ("PATH", path)
+  ]
+
+  -- Run lean to check compilation
+  let cwd := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
+  let result ← IO.Process.output {
+    cmd := "lean"
+    args := #[tempFile.toString]
+    env := env
+    cwd := some cwd
+  }
+
+  -- Clean up temp file
+  IO.FS.removeFile tempFile
+
+  return result.exitCode == 0
+
+/-! ## The pass -/
+
+/-- The body replacement pass.
+
+    For each declaration before the marker (working upward from just before marker):
+    1. Try replacing the entire body with `sorry`
+    2. If that fails and it's a where-structure, try replacing field values individually
+
+    Returns `.restart` on any success to allow other passes to run. -/
+def bodyReplacementPass : Pass where
+  name := "Body Replacement"
+  cliFlag := "sorry"
+  run := fun ctx => do
+    if ctx.verbose then
+      IO.eprintln s!"  Processing {ctx.markerIdx} commands for body replacement..."
+
+    -- Process declarations from just before marker going upward
+    for i in (List.range ctx.markerIdx).reverse do
+      let some step := ctx.steps[i]?
+        | continue
+
+      -- Check if this is a declaration with a body
+      let some bodyRange := getDeclBodyRange? step.stx
+        | continue
+
+      -- Skip if body is already sorry
+      if bodyIsSorry ctx.source bodyRange.1 bodyRange.2 then
+        continue
+
+      if ctx.verbose then
+        IO.eprintln s!"    Trying declaration at index {i}..."
+
+      -- Phase 1: Try replacing entire body with sorry
+      let newSource := replaceWithSorry ctx.source bodyRange.1 bodyRange.2
+      if ← testSourceCompilesForSorry newSource ctx.fileName then
+        if ctx.verbose then
+          IO.eprintln s!"    Success: replaced entire body with sorry"
+        return { source := newSource, changed := true, action := .restart }
+
+      -- Phase 2: For where-structures, try replacing field values
+      if let some inner := getInnerDecl? step.stx then
+        if let some declVal := findDeclVal? inner then
+          if declVal.isOfKind `Lean.Parser.Command.whereStructInst then
+            let fieldRanges := getWhereFieldValueRanges declVal
+            if ctx.verbose && !fieldRanges.isEmpty then
+              IO.eprintln s!"    Trying {fieldRanges.size} field values..."
+
+            let mut currentSource := ctx.source
+            let mut anyChanged := false
+
+            -- Sort by position descending to preserve earlier positions
+            -- Filter out fields that are already sorry
+            let sortedRanges := fieldRanges.filter (fun (s, e) => !bodyIsSorry currentSource s e)
+              |>.qsort (fun a b => a.1.byteIdx > b.1.byteIdx)
+            for (startPos, endPos) in sortedRanges do
+              let newSource := replaceWithSorry currentSource startPos endPos
+              if ← testSourceCompilesForSorry newSource ctx.fileName then
+                if ctx.verbose then
+                  IO.eprintln s!"      Replaced field value at {startPos.byteIdx}-{endPos.byteIdx}"
+                currentSource := newSource
+                anyChanged := true
+
+            if anyChanged then
+              return { source := currentSource, changed := true, action := .restart }
+
+    -- No changes possible
+    if ctx.verbose then
+      IO.eprintln s!"  No body replacements possible"
+    return { source := ctx.source, changed := false, action := .continue }
+
+end LeanMinimizer
