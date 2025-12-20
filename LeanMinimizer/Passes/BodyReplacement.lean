@@ -5,6 +5,7 @@ Authors: Kim Morrison
 -/
 import LeanMinimizer.Pass
 import LeanMinimizer.Dependencies
+import Lean.Meta.InferType
 
 /-!
 # Body Replacement Pass
@@ -13,7 +14,8 @@ This pass replaces declaration bodies with `sorry` to simplify minimized files.
 
 For each declaration (working upward from just above the invariant):
 1. Try replacing the entire body with `sorry`
-2. If that fails, try replacing field values in where-structures with `sorry`
+2. If that fails, try replacing Prop-valued subexpressions with `sorry`
+3. If that fails and it's a where-structure, try replacing field values with `sorry`
 
 When replacing subexpressions, we process them in reverse position order
 to avoid invalidating source positions.
@@ -21,7 +23,7 @@ to avoid invalidating source positions.
 
 namespace LeanMinimizer
 
-open Lean Elab Frontend Parser
+open Lean Elab Frontend Parser Meta
 
 /-! ## Declaration body detection -/
 
@@ -111,6 +113,60 @@ partial def getWhereFieldValueRanges (declVal : Syntax) : Array (String.Pos.Raw 
       (List.range stx.getNumArgs).foldl (init := acc') fun a i => collectFields (stx.getArg i) a
     collectFields declVal #[]
 
+/-! ## Prop subexpression extraction -/
+
+/-- Extract Prop-valued subexpression ranges from InfoTrees.
+    These are subexpressions whose type is a proposition (i.e., they are proofs).
+    We only include subexpressions that fall within the given body range.
+
+    This includes:
+    1. TermInfo nodes whose type is Prop
+    2. TacticInfo nodes (like `by ...`) that represent proof terms -/
+def extractPropSubexprs (trees : List InfoTree) (bodyStartPos bodyEndPos : String.Pos.Raw) :
+    IO (Array (String.Pos.Raw × String.Pos.Raw)) := do
+  let mut result : Array (String.Pos.Raw × String.Pos.Raw) := #[]
+  for tree in trees do
+    let propRanges ← tree.foldInfoM (init := #[]) fun ctx info acc => do
+      match info with
+      | .ofTermInfo ti =>
+        -- Get the source range of this term
+        let some startPos := ti.stx.getPos? (canonicalOnly := true)
+          | return acc
+        let some endPos := ti.stx.getTailPos? (canonicalOnly := true)
+          | return acc
+        -- Check if this term is within the body range
+        if startPos.byteIdx < bodyStartPos.byteIdx || endPos.byteIdx > bodyEndPos.byteIdx then
+          return acc
+        -- Check if this expression is a proof (its type is Prop)
+        let isPropValued ← try
+          ctx.runMetaM ti.lctx do
+            let ty ← inferType ti.expr
+            isProp ty
+        catch _ =>
+          pure false
+        if isPropValued then
+          return acc.push (startPos, endPos)
+        else
+          return acc
+      | .ofTacticInfo ti =>
+        -- Get the source range
+        let some startPos := ti.stx.getPos? (canonicalOnly := true)
+          | return acc
+        let some endPos := ti.stx.getTailPos? (canonicalOnly := true)
+          | return acc
+        -- Check if within body range
+        if startPos.byteIdx < bodyStartPos.byteIdx || endPos.byteIdx > bodyEndPos.byteIdx then
+          return acc
+        -- Tactics that represent proof terms (like `by ...`) are always Prop-valued
+        -- Check if this is a `by` block - the whole thing can be replaced with sorry
+        if ti.stx.getKind == `Lean.Parser.Term.byTactic then
+          return acc.push (startPos, endPos)
+        else
+          return acc
+      | _ => return acc
+    result := result ++ propRanges
+  return result
+
 /-! ## Source manipulation -/
 
 /-- Replace a source range with `sorry` -/
@@ -189,7 +245,36 @@ def bodyReplacementPass : Pass where
           IO.eprintln s!"    Success: replaced entire body with sorry"
         return { source := newSource, changed := true, action := .restart }
 
-      -- Phase 2: For where-structures, try replacing field values
+      -- Phase 2: Try replacing Prop-valued subexpressions with sorry
+      let propSubexprs ← extractPropSubexprs step.trees bodyRange.1 bodyRange.2
+      if !propSubexprs.isEmpty then
+        if ctx.verbose then
+          IO.eprintln s!"    Found {propSubexprs.size} Prop-valued subexpressions..."
+
+        let mut currentSource := ctx.source
+        let mut anyChanged := false
+
+        -- Sort by position descending to preserve earlier positions
+        -- Filter out subexprs that are already sorry
+        -- Also deduplicate by removing overlapping ranges (keep larger ones)
+        let sortedRanges := propSubexprs.filter (fun (s, e) => !bodyIsSorry currentSource s e)
+          |>.qsort (fun a b => a.1.byteIdx > b.1.byteIdx)
+
+        for (startPos, endPos) in sortedRanges do
+          -- Skip if this range overlaps with a previously replaced range
+          if bodyIsSorry currentSource startPos endPos then
+            continue
+          let newSource := replaceWithSorry currentSource startPos endPos
+          if ← testSourceCompilesForSorry newSource ctx.fileName then
+            if ctx.verbose then
+              IO.eprintln s!"      Replaced Prop subexpr at {startPos.byteIdx}-{endPos.byteIdx}"
+            currentSource := newSource
+            anyChanged := true
+
+        if anyChanged then
+          return { source := currentSource, changed := true, action := .restart }
+
+      -- Phase 3: For where-structures, try replacing field values
       if let some inner := getInnerDecl? step.stx then
         if let some declVal := findDeclVal? inner then
           if declVal.isOfKind `Lean.Parser.Command.whereStructInst then

@@ -68,8 +68,13 @@ Replaces declaration bodies with `sorry` to simplify the test case:
 
 1. Works declaration by declaration, starting from just above the invariant section and moving upward
 2. For each declaration, tries replacing the entire body with `sorry`
-3. For `where`-style structure definitions, tries replacing individual field values with `sorry`
-4. Returns to the first pass after each successful replacement (since simplified bodies may enable further deletions)
+3. If that fails, identifies Prop-valued subexpressions (proofs) and tries replacing each with `sorry`
+4. For `where`-style structure definitions, tries replacing individual field values with `sorry`
+5. Returns to the first pass after each successful replacement (since simplified bodies may enable further deletions)
+
+The Prop subexpression detection uses the InfoTree to find:
+- Term expressions whose type is `Prop` (i.e., proofs)
+- Tactic blocks (`by ...`) that represent proof terms
 
 ### Pass 5: Import Minimization
 
