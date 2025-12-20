@@ -71,7 +71,7 @@ def findTestFilesIn (dir : FilePath) : IO (Array FilePath) := do
   let leanFiles := entries.filterMap fun entry =>
     let path := entry.path
     let name := entry.fileName
-    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" then
+    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" && !name.containsSubstr ".out" then
       some path
     else
       none
@@ -91,7 +91,7 @@ def findCLITestFilesIn (dir : FilePath) : IO (Array FilePath) := do
   for entry in entries do
     let name := entry.fileName
     -- Direct .lean test files
-    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" then
+    if name.endsWith ".lean" && !name.containsSubstr ".expected" && !name.containsSubstr ".produced" && !name.containsSubstr ".out" then
       tests := tests.push entry.path
     -- .lean.input files define tests with external input
     else if name.endsWith ".lean.input" then
@@ -149,10 +149,10 @@ def runGoldenTest (testFile : FilePath) : IO TestResult := do
 
   -- Run minimizer binary directly (faster than `lake exe minimize`)
   -- Use -o to write directly to produced file, updating as minimization progresses
-  -- Use --verbose to capture logs for debugging
+  -- Verbose is now the default, logs are captured in stderr
   let cwd ← IO.currentDir
   let extraArgs ← getArgs testFile
-  let args := #[testFile.toString, "--marker", marker, "-o", (cwd / producedFile).toString, "--verbose"] ++ extraArgs
+  let args := #[testFile.toString, "--marker", marker, "-o", (cwd / producedFile).toString] ++ extraArgs
   -- Get environment variables needed by the minimize binary
   let leanPath ← IO.getEnv "LEAN_PATH"
   let leanSysroot ← IO.getEnv "LEAN_SYSROOT"

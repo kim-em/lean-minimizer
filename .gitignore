@@ -2,4 +2,5 @@
 *.produced.out
 *.produced.lean
 *.produced.err
+*.out.lean
 *.log

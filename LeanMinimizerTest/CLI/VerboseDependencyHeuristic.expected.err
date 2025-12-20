@@ -71,7 +71,9 @@
   No changes, moving to next pass
 [Pass 5] Running: Import Minimization
   No imports to minimize
+  No imports could be removed or replaced
   No changes, moving to next pass
 [Pass 6] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
+Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

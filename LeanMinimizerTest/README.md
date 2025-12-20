@@ -108,7 +108,7 @@ Each test consists of:
 To test the minimizer on an existing file (e.g., a golden test) with specific
 CLI options, create only the metadata files:
 - `CLI/MyTest.lean.input` - contains the path to the input file
-- `CLI/MyTest.lean.args` - contains CLI arguments (e.g., `--verbose`)
+- `CLI/MyTest.lean.args` - contains CLI arguments (e.g., `--quiet`)
 
 Example: `VerboseDependencyHeuristic.lean.input` contains:
 ```

@@ -11,7 +11,8 @@ lake exe minimize <file.lean> [options]
 ### Options
 
 - `--marker <PATTERN>`: Pattern to search for in commands to identify the invariant section (default: `#guard_msgs`)
-- `--verbose`: Print progress information during minimization
+- `-o, --output <FILE>`: Write output to FILE (default: `<input>.out.lean`)
+- `-q, --quiet`: Suppress progress information during minimization
 - `--no-module-removal`: Disable the module system removal pass
 - `--no-delete`: Disable the command deletion pass
 - `--no-import-minimization`: Disable the import minimization pass
