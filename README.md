@@ -18,6 +18,7 @@ lake exe minimize <file.lean> [options]
 - `--no-import-inlining`: Disable the import inlining pass
 - `--no-sorry`: Disable the body replacement pass
 - `--no-text-subst`: Disable the text substitution pass
+- `--no-extends`: Disable the extends clause simplification pass
 - `--help`: Show help message
 
 ### Example
@@ -90,12 +91,24 @@ Performs textual replacements to simplify declarations:
 
 Each mini-pass tries all replacements at once first; if that fails, it applies them one-by-one from bottom to top. Comments and strings are preserved.
 
-### Pass 6: Import Minimization
+### Pass 6: Extends Simplification
+
+Simplifies `extends` clauses in structure definitions:
+
+1. For each structure with an extends clause, for each parent listed:
+   - Tries to remove that parent entirely
+   - If that fails, tries to replace it with the parent's own parents (grandparents)
+2. When removing a parent causes errors on `sorry`-valued field lines, those lines are automatically deleted
+3. Returns to the first pass after each successful change (since removing a parent may enable deletion of now-unused structures)
+
+This is useful when a structure extends multiple parents but only needs fields from some of them.
+
+### Pass 7: Import Minimization
 
 1. Tries to remove each import entirely
 2. For imports that can't be removed, tries to replace them with their transitive imports (useful when only a subset of a module's dependencies are needed)
 
-### Pass 7: Import Inlining
+### Pass 8: Import Inlining
 
 Inlines project-local imports to create self-contained test files:
 

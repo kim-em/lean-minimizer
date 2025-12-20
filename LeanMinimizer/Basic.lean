@@ -65,6 +65,9 @@ Options:
   --no-text-subst
     Disable the text substitution pass.
 
+  --no-extends
+    Disable the extends clause simplification pass.
+
   --help
     Show this help message.
 
@@ -105,6 +108,8 @@ structure Args where
   noImportInlining : Bool := false
   /-- Disable the text substitution pass -/
   noTextSubst : Bool := false
+  /-- Disable the extends clause simplification pass -/
+  noExtendsSimplification : Bool := false
 
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
@@ -125,6 +130,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
     | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
     | "--no-text-subst" :: rest => go rest { acc with noTextSubst := true }
+    | "--no-extends" :: rest => go rest { acc with noExtendsSimplification := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"

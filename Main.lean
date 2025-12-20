@@ -5,13 +5,14 @@ import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
 import LeanMinimizer.Passes.BodyReplacement
 import LeanMinimizer.Passes.TextSubstitution
+import LeanMinimizer.Passes.ExtendsSimplification
 import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining
 
 open Lean LeanMinimizer
 
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Import Minimization → Import Inlining -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Extends Simplification → Import Minimization → Import Inlining -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   #[]
   |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
@@ -19,6 +20,7 @@ unsafe def buildPassList (args : Args) : Array Pass :=
   |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
   |> (if args.noSorry then id else (·.push bodyReplacementPass))
   |> (if args.noTextSubst then id else (·.push textSubstitutionPass))
+  |> (if args.noExtendsSimplification then id else (·.push extendsSimplificationPass))
   |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
   |> (if args.noImportInlining then id else (·.push importInliningPass))
 

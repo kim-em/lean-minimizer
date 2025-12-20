@@ -9,9 +9,6 @@ Replace any surviving `@[simps]`, `@[to_additive]`, and `@[to_dual]` attributes 
 ## Structure Field Removal
 Remove a field from a structure, if all uses of that field below are `sorry` (and remove those uses).
 
-## Extends Clause Simplification
-Remove parents from `extends` statements.
-
 ## Linter-Guided Argument Removal
 Remove unused arguments flagged by the linter.
 
