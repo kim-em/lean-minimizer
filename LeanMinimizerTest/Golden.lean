@@ -2,6 +2,8 @@
 This module imports all Golden test submodules to ensure they are built.
 These modules are used as test inputs by the minimize tool.
 -/
+import LeanMinimizerTest.Golden.BodyReplacementInlined.B
+import LeanMinimizerTest.Golden.BodyReplacementInlined.C
 import LeanMinimizerTest.Golden.ImportInlining.Simple
 import LeanMinimizerTest.Golden.ImportInliningComplex.A
 import LeanMinimizerTest.Golden.ImportInliningComplex.B
