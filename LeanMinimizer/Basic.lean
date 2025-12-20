@@ -44,13 +44,13 @@ Options:
     Pattern to search for in commands to identify the invariant section.
     Default: \"#guard_msgs\"
 
-  --verbose
-    Print progress information during minimization.
+  -q, --quiet
+    Suppress progress information during minimization.
 
   -o, --output <FILE>
-    Write output to FILE instead of stdout. The file is updated after
-    each successful minimization step, allowing you to follow along
-    in an editor as the minimization progresses.
+    Write output to FILE. Defaults to <input>.out.lean if not specified.
+    The file is updated after each successful minimization step,
+    allowing you to follow along in an editor as the minimization progresses.
 
   --no-module-removal
     Disable the module system removal pass.
@@ -99,7 +99,7 @@ and regression tests.
 structure Args where
   file : String
   marker : String := "#guard_msgs"
-  verbose : Bool := false
+  quiet : Bool := false
   help : Bool := false
   /-- Output file to write intermediate results to -/
   outputFile : Option String := none
@@ -118,6 +118,9 @@ structure Args where
   /-- Disable the extends clause simplification pass -/
   noExtendsSimplification : Bool := false
 
+/-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
+def Args.verbose (args : Args) : Bool := !args.quiet
+
 /-- Parse command line arguments -/
 def parseArgs (args : List String) : Except String Args := do
   let rec go (args : List String) (acc : Args) : Except String Args :=
@@ -128,7 +131,8 @@ def parseArgs (args : List String) : Except String Args := do
       else
         .ok acc
     | "--help" :: rest => go rest { acc with help := true }
-    | "--verbose" :: rest => go rest { acc with verbose := true }
+    | "--quiet" :: rest => go rest { acc with quiet := true }
+    | "-q" :: rest => go rest { acc with quiet := true }
     | "--marker" :: pattern :: rest => go rest { acc with marker := pattern }
     | "--marker" :: [] => .error "--marker requires an argument"
     | "-o" :: path :: rest => go rest { acc with outputFile := some path }

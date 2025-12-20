@@ -41,11 +41,15 @@ unsafe def main (args : List String) : IO UInt32 := do
     try
       let input ← IO.FS.readFile parsedArgs.file
       let passes := buildPassList parsedArgs
-      let result ← runPasses passes input parsedArgs.file parsedArgs.marker
-                     parsedArgs.verbose parsedArgs.outputFile
-      -- Only print to stdout if no output file was specified
-      if parsedArgs.outputFile.isNone then
-        IO.print result
+      -- Default output file: replace .lean with .out.lean
+      let outputFile := parsedArgs.outputFile.getD
+        (if parsedArgs.file.endsWith ".lean" then
+          (parsedArgs.file.dropEnd 5).toString ++ ".out.lean"
+        else
+          parsedArgs.file ++ ".out.lean")
+      let _ ← runPasses passes input parsedArgs.file parsedArgs.marker
+                     parsedArgs.verbose (some outputFile)
+      IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>
       IO.eprintln s!"Error: {e}"
