@@ -65,20 +65,9 @@ def reconstructHeaderWithoutModule (header : Syntax) : String := Id.run do
 
   return result
 
-/-- Test if a source string compiles successfully -/
-unsafe def testSourceCompiles (source : String) (fileName : String) : IO Bool := do
-  let inputCtx := Parser.mkInputContext source fileName
-  let (header, parserState, messages) ← Parser.parseHeader inputCtx
-
-  if messages.hasErrors then
-    return false
-
-  let (env, messages) ← Elab.processHeader header {} messages inputCtx
-  if messages.hasErrors then
-    return false
-
-  let s ← IO.processCommands inputCtx parserState (Elab.Command.mkState env messages {})
-  return !s.commandState.messages.hasErrors
+/-- Test if a source string compiles successfully (using subprocess for memory isolation). -/
+def testSourceCompiles (source : String) (fileName : String) : IO Bool :=
+  testCompilesSubprocess source fileName
 
 /-- The module system removal pass.
 

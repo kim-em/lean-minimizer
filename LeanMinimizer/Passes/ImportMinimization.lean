@@ -127,20 +127,9 @@ def reconstructHeader (usesModule : Bool) (hasPrelude : Bool)
     result := result ++ "\n"
   return result
 
-/-- Test if a source string compiles successfully -/
-unsafe def testSourceCompiles' (source : String) (fileName : String) : IO Bool := do
-  let inputCtx := Parser.mkInputContext source fileName
-  let (header, parserState, messages) ← Parser.parseHeader inputCtx
-
-  if messages.hasErrors then
-    return false
-
-  let (env, messages) ← processHeader header {} messages inputCtx
-  if messages.hasErrors then
-    return false
-
-  let s ← IO.processCommands inputCtx parserState (Command.mkState env messages {})
-  return !s.commandState.messages.hasErrors
+/-- Test if a source string compiles successfully (using subprocess for memory isolation). -/
+def testSourceCompiles' (source : String) (fileName : String) : IO Bool :=
+  testCompilesSubprocess source fileName
 
 /-- Get the imports of a module from the environment.
     Returns none if the module is not found. -/

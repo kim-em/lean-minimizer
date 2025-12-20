@@ -327,23 +327,41 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
   result
 
-/-- Check if reconstructed source compiles -/
-unsafe def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do
+/-- Test if source compiles by running lean in a subprocess.
+    This isolates memory usage - when the subprocess exits, all Lean caches are freed. -/
+def testCompilesSubprocess (source : String) (_fileName : String) : IO Bool := do
+  -- Create temp file (fileName is kept for API compatibility but not used in temp path)
+  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-test-{← IO.monoMsNow}.lean"
+  IO.FS.writeFile tempFile source
+
+  -- Get environment variables for lean
+  let leanPath ← IO.getEnv "LEAN_PATH"
+  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
+  let path ← IO.getEnv "PATH"
+
+  let env : Array (String × Option String) := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", leanSysroot),
+    ("PATH", path)
+  ]
+
+  -- Run lean to check compilation
+  let result ← IO.Process.output {
+    cmd := "lean"
+    args := #[tempFile.toString]
+    env := env
+  }
+
+  -- Clean up temp file
+  IO.FS.removeFile tempFile
+
+  return result.exitCode == 0
+
+/-- Check if reconstructed source compiles (using subprocess for memory isolation) -/
+def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do
   state.testCount.modify (· + 1)
   let source := reconstructSource state keepIndices
-
-  let inputCtx := Parser.mkInputContext source state.fileName
-  let (header, parserState, messages) ← Parser.parseHeader inputCtx
-
-  if messages.hasErrors then
-    return false
-
-  let (env, messages) ← processHeader header {} messages inputCtx
-  if messages.hasErrors then
-    return false
-
-  let s ← IO.processCommands inputCtx parserState (Command.mkState env messages {})
-  return !s.commandState.messages.hasErrors
+  testCompilesSubprocess source state.fileName
 
 /-- Delta debugging algorithm to find minimal required commands.
 
