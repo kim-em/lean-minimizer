@@ -146,28 +146,24 @@ def getModuleImports (env : Environment) (modName : Name) : Option (Array Import
 
 /-- The import minimization pass.
 
-    Iteratively tries to remove or inline imports until no more changes can be made. -/
+    Iteratively tries to remove or inline imports until no more changes can be made.
+    Tracks which imports have been tried within this pass run to avoid redundant work. -/
 unsafe def importMinimizationPass : Pass where
   name := "Import Minimization"
   cliFlag := "import-minimization"
   run := fun ctx => do
     let usesModule := headerUsesModuleSystem ctx.header
     let hasPrelude := headerHasPrelude ctx.header
-    let imports := extractImports ctx.header
 
-    if imports.isEmpty then
-      if ctx.verbose then
-        IO.eprintln "  No imports to minimize"
-      return { source := ctx.source, changed := false, action := .continue }
+    -- Track imports we've already tried and failed to remove/replace
+    let mut triedAndFailed : Std.HashSet Name := {}
+    let mut currentSource := ctx.source
+    let mut anyChanges := false
 
-    if ctx.verbose then
-      IO.eprintln s!"  Analyzing {imports.size} imports..."
-
-    -- Get the environment from the first step (after header processing)
+    -- Get initial environment for looking up transitive imports
     let env ← match ctx.steps[0]? with
     | some step => pure step.before
     | none =>
-      -- Fall back to processing header ourselves
       let inputCtx := Parser.mkInputContext ctx.source ctx.fileName
       let (header, _parserState, messages) ← Parser.parseHeader inputCtx
       if messages.hasErrors then
@@ -175,58 +171,88 @@ unsafe def importMinimizationPass : Pass where
       let (env, _msgs) ← processHeader header {} messages inputCtx
       pure env
 
-    -- Get the commands part (everything after the header)
-    let commandsPart := String.Pos.Raw.extract ctx.source ctx.headerEndPos ctx.source.rawEndPos
-
     -- Whether to strip modifiers when generating imports
     let stripModifiers := !usesModule
 
-    -- Try each import for removal or replacement
-    for imp in imports do
+    -- Loop until no more changes can be made
+    let maxIterations := 1000
+    for _ in [:maxIterations] do
+      -- Re-parse header to get current imports
+      let inputCtx := Parser.mkInputContext currentSource ctx.fileName
+      let (header, parserState, _) ← Parser.parseHeader inputCtx
+      let imports := extractImports header
+      let headerEndPos := parserState.pos
+      let commandsPart := String.Pos.Raw.extract currentSource headerEndPos currentSource.rawEndPos
+
+      if imports.isEmpty then
+        if ctx.verbose && !anyChanges then
+          IO.eprintln "  No imports to minimize"
+        break
+
       if ctx.verbose then
-        IO.eprintln s!"  Trying to remove import {imp.moduleName}..."
+        IO.eprintln s!"  Analyzing {imports.size} imports ({triedAndFailed.size} already tried)..."
 
-      -- Try 1: Remove this import entirely
-      let remainingImports := imports.filter fun x => x != imp
-      let newHeader := reconstructHeader usesModule hasPrelude remainingImports stripModifiers
-      let newSource := newHeader ++ commandsPart
+      -- Find an import we haven't tried yet
+      let mut madeProgress := false
+      for imp in imports do
+        if triedAndFailed.contains imp.moduleName then
+          continue
 
-      if ← testSourceCompiles' newSource ctx.fileName then
         if ctx.verbose then
-          IO.eprintln s!"    Removed import {imp.moduleName}"
-        return { source := newSource, changed := true, action := .repeat }
+          IO.eprintln s!"  Trying to remove import {imp.moduleName}..."
 
-      -- Try 2: Replace with its own imports
-      if let some transitiveImports := getModuleImports env imp.moduleName then
-        if !transitiveImports.isEmpty then
+        -- Try 1: Remove this import entirely
+        let remainingImports := imports.filter fun x => x != imp
+        let newHeader := reconstructHeader usesModule hasPrelude remainingImports stripModifiers
+        let newSource := newHeader ++ commandsPart
+
+        if ← testSourceCompiles' newSource ctx.fileName then
           if ctx.verbose then
-            IO.eprintln s!"  Trying to replace import {imp.moduleName} with its {transitiveImports.size} imports..."
+            IO.eprintln s!"    Removed import {imp.moduleName}"
+          currentSource := newSource
+          anyChanges := true
+          madeProgress := true
+          break
 
-          -- Build new import list: remove current, add transitive (avoiding duplicates)
-          let mut newImports := imports.filter fun x => x != imp
-          for transImp in transitiveImports do
-            let transInfo := leanImportToInfo transImp
-            -- Skip Init - it's always implicitly available and causes infinite loops
-            -- when it gets added and then removed repeatedly
-            if transInfo.moduleName == `Init then
-              continue
-            -- Check if already present
-            let alreadyPresent := newImports.any fun existing =>
-              existing.moduleName == transInfo.moduleName
-            if !alreadyPresent then
-              newImports := newImports.push transInfo
-
-          let newHeader := reconstructHeader usesModule hasPrelude newImports stripModifiers
-          let newSource := newHeader ++ commandsPart
-
-          if ← testSourceCompiles' newSource ctx.fileName then
+        -- Try 2: Replace with its own imports
+        if let some transitiveImports := getModuleImports env imp.moduleName then
+          if !transitiveImports.isEmpty then
             if ctx.verbose then
-              IO.eprintln s!"    Replaced import {imp.moduleName} with its imports"
-            return { source := newSource, changed := true, action := .repeat }
+              IO.eprintln s!"  Trying to replace import {imp.moduleName} with its {transitiveImports.size} imports..."
 
-    -- No changes possible
-    if ctx.verbose then
+            -- Build new import list: remove current, add transitive (avoiding duplicates)
+            let mut newImports := imports.filter fun x => x != imp
+            for transImp in transitiveImports do
+              let transInfo := leanImportToInfo transImp
+              -- Skip Init - it's always implicitly available and causes infinite loops
+              if transInfo.moduleName == `Init then
+                continue
+              let alreadyPresent := newImports.any fun existing =>
+                existing.moduleName == transInfo.moduleName
+              if !alreadyPresent then
+                newImports := newImports.push transInfo
+
+            let newHeader := reconstructHeader usesModule hasPrelude newImports stripModifiers
+            let newSource := newHeader ++ commandsPart
+
+            if ← testSourceCompiles' newSource ctx.fileName then
+              if ctx.verbose then
+                IO.eprintln s!"    Replaced import {imp.moduleName} with its imports"
+              currentSource := newSource
+              anyChanges := true
+              madeProgress := true
+              break
+
+        -- Mark this import as tried and failed
+        triedAndFailed := triedAndFailed.insert imp.moduleName
+
+      -- If no progress was made, we're done
+      if !madeProgress then
+        break
+
+    if ctx.verbose && !anyChanges then
       IO.eprintln "  No imports could be removed or replaced"
-    return { source := ctx.source, changed := false, action := .continue }
+
+    return { source := currentSource, changed := anyChanges, action := .continue }
 
 end LeanMinimizer
