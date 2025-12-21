@@ -233,4 +233,63 @@ def findInvariantDependencies (stepsBeforeMarker : Array CompilationStep)
 
   return result
 
+/-! ## Declaration body detection -/
+
+/-- Check if syntax is a declaration kind that has a body we can replace -/
+def isDeclarationKind (stx : Syntax) : Bool :=
+  stx.isOfKind `Lean.Parser.Command.declaration
+
+/-- Find the inner declaration (theorem, def, etc.) from a declaration command.
+    Declaration syntax is: declModifiers (abbrev | definition | theorem | ...) -/
+def getInnerDecl? (stx : Syntax) : Option Syntax := do
+  if !isDeclarationKind stx then
+    failure
+  if stx.getNumArgs < 2 then
+    failure
+  return stx.getArg 1
+
+/-- Find declVal syntax within an inner declaration (theorem/def/etc).
+    declVal is one of: declValSimple | declValEqns | whereStructInst -/
+def findDeclVal? (inner : Syntax) : Option Syntax := do
+  for i in [:inner.getNumArgs] do
+    let child := inner.getArg i
+    if child.isOfKind `Lean.Parser.Command.declValSimple ||
+       child.isOfKind `Lean.Parser.Command.declValEqns ||
+       child.isOfKind `Lean.Parser.Command.whereStructInst then
+      return child
+  failure
+
+/-- Get the body syntax from declValSimple (`:= body`).
+    declValSimple has structure: ":=" body termination? whereDecls? -/
+def getDeclValSimpleBody? (declVal : Syntax) : Option Syntax := do
+  if !declVal.isOfKind `Lean.Parser.Command.declValSimple then
+    failure
+  if declVal.getNumArgs < 2 then
+    failure
+  return declVal.getArg 1
+
+/-- Get the body range from declValSimple -/
+def getDeclValSimpleBodyRange? (declVal : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let body ← getDeclValSimpleBody? declVal
+  let startPos ← body.getPos?
+  let endPos ← body.getTailPos?
+  return (startPos, endPos)
+
+/-- Get body range from whereStructInst.
+    whereStructInst has structure: "where" structInstFields -/
+def getWhereStructInstBodyRange? (declVal : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  if !declVal.isOfKind `Lean.Parser.Command.whereStructInst then
+    failure
+  -- The whole whereStructInst is the "body" we might want to replace
+  let startPos ← declVal.getPos?
+  let endPos ← declVal.getTailPos?
+  return (startPos, endPos)
+
+/-- Get the body range for a declaration.
+    Returns the range of the part we want to replace with sorry. -/
+def getDeclBodyRange? (stx : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := do
+  let inner ← getInnerDecl? stx
+  let declVal ← findDeclVal? inner
+  getDeclValSimpleBodyRange? declVal <|> getWhereStructInstBodyRange? declVal
+
 end LeanMinimizer

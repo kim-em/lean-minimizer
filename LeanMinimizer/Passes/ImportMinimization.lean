@@ -145,10 +145,6 @@ def reconstructHeader (usesModule : Bool) (hasPrelude : Bool)
     result := result ++ "\n"
   return result
 
-/-- Test if a source string compiles successfully (using subprocess for memory isolation). -/
-def testSourceCompiles' (source : String) (fileName : String) : IO Bool :=
-  testCompilesSubprocess source fileName
-
 /-- Get the imports of a module from the environment.
     Returns none if the module is not found. -/
 def getModuleImports (env : Environment) (modName : Name) : Option (Array Import) := do
@@ -226,7 +222,7 @@ unsafe def importMinimizationPass : Pass where
         let newHeader := reconstructHeader usesModule hasPrelude remainingImports stripModifiers
         let newSource := newHeader ++ commandsPart
 
-        if ← testSourceCompiles' newSource ctx.fileName then
+        if ← testCompilesSubprocess newSource ctx.fileName then
           if ctx.verbose then
             IO.eprintln s!"    Removed import {imp.moduleName}"
           currentSource := newSource
@@ -257,7 +253,7 @@ unsafe def importMinimizationPass : Pass where
             let newHeader := reconstructHeader usesModule hasPrelude newImports stripModifiers
             let newSource := newHeader ++ commandsPart
 
-            if ← testSourceCompiles' newSource ctx.fileName then
+            if ← testCompilesSubprocess newSource ctx.fileName then
               if ctx.verbose then
                 IO.eprintln s!"    Replaced import {imp.moduleName} with its imports"
               currentSource := newSource

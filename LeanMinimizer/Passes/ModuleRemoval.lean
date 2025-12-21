@@ -65,10 +65,6 @@ def reconstructHeaderWithoutModule (header : Syntax) : String := Id.run do
 
   return result
 
-/-- Test if a source string compiles successfully (using subprocess for memory isolation). -/
-def testSourceCompiles (source : String) (fileName : String) : IO Bool :=
-  testCompilesSubprocess source fileName
-
 /-- The module system removal pass.
 
     Removes the `module` keyword and strips import modifiers if the file
@@ -100,7 +96,7 @@ unsafe def moduleRemovalPass : Pass where
     let newSource := newHeader ++ commandsPart
 
     -- Test if it compiles
-    if !(← testSourceCompiles newSource ctx.fileName) then
+    if !(← testCompilesSubprocess newSource ctx.fileName) then
       if ctx.verbose then
         IO.eprintln "  Module removal failed (does not compile), keeping original"
       return { source := ctx.source, changed := false, action := .continue }

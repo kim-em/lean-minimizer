@@ -160,7 +160,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     else
       -- Tier 1 pass: run in orchestrator with serialized data
       -- Elaborate the current source via subprocess to avoid [init] conflicts
-      let subprocessResult ← runFrontendSubprocess source fileName
+      let subprocessResult ← runAnalyzeSubprocess source fileName
       let some markerIdx := findMarkerIdxInSubprocessSteps subprocessResult.commands marker
         | throw <| IO.userError (markerNotFoundError marker)
 

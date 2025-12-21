@@ -147,68 +147,9 @@ def findInvariantDependenciesFromSubprocess
 
   return result
 
-/-! ## Declaration body detection (for subprocess export) -/
-
-/-- Check if syntax is a declaration kind that has a body we can replace -/
-private def isDeclarationKindImpl (stx : Syntax) : Bool :=
-  stx.isOfKind `Lean.Parser.Command.declaration
-
-/-- Find the inner declaration (theorem, def, etc.) from a declaration command.
-    Declaration syntax is: declModifiers (abbrev | definition | theorem | ...) -/
-private def getInnerDeclImpl? (stx : Syntax) : Option Syntax := do
-  if !isDeclarationKindImpl stx then
-    failure
-  if stx.getNumArgs < 2 then
-    failure
-  return stx.getArg 1
-
-/-- Find declVal syntax within an inner declaration (theorem/def/etc).
-    declVal is one of: declValSimple | declValEqns | whereStructInst -/
-private def findDeclValImpl? (inner : Syntax) : Option Syntax := do
-  for i in [:inner.getNumArgs] do
-    let child := inner.getArg i
-    if child.isOfKind `Lean.Parser.Command.declValSimple ||
-       child.isOfKind `Lean.Parser.Command.declValEqns ||
-       child.isOfKind `Lean.Parser.Command.whereStructInst then
-      return child
-  failure
-
-/-- Get the body syntax from declValSimple (`:= body`).
-    declValSimple has structure: ":=" body termination? whereDecls? -/
-private def getDeclValSimpleBodyImpl? (declVal : Syntax) : Option Syntax := do
-  if !declVal.isOfKind `Lean.Parser.Command.declValSimple then
-    failure
-  if declVal.getNumArgs < 2 then
-    failure
-  return declVal.getArg 1
-
-/-- Get the body range from declValSimple -/
-private def getDeclValSimpleBodyRangeImpl? (declVal : Syntax) : Option (Nat × Nat) := do
-  let body ← getDeclValSimpleBodyImpl? declVal
-  let startPos ← body.getPos?
-  let endPos ← body.getTailPos?
-  return (startPos.byteIdx, endPos.byteIdx)
-
-/-- Get body range from whereStructInst.
-    whereStructInst has structure: "where" structInstFields -/
-private def getWhereStructInstBodyRangeImpl? (declVal : Syntax) : Option (Nat × Nat) := do
-  if !declVal.isOfKind `Lean.Parser.Command.whereStructInst then
-    failure
-  -- The whole whereStructInst is the "body" we might want to replace
-  let startPos ← declVal.getPos?
-  let endPos ← declVal.getTailPos?
-  return (startPos.byteIdx, endPos.byteIdx)
-
-/-- Get the body range for a declaration.
-    Returns the range of the part we want to replace with sorry. -/
-private def getDeclBodyRangeImpl? (stx : Syntax) : Option (Nat × Nat) := do
-  let inner ← getInnerDeclImpl? stx
-  let declVal ← findDeclValImpl? inner
-  getDeclValSimpleBodyRangeImpl? declVal <|> getWhereStructInstBodyRangeImpl? declVal
-
 /-- Convert a CompilationStep to serializable SubprocessCmdInfo -/
 def CompilationStep.toSubprocessInfo (step : CompilationStep) : SubprocessCmdInfo :=
-  let bodyRange := getDeclBodyRangeImpl? step.stx
+  let bodyRange := getDeclBodyRange? step.stx
   { idx := step.idx
     stxRepr := step.stx.reprint.getD ""
     stxKind := step.stx.getKind.toString
@@ -216,8 +157,8 @@ def CompilationStep.toSubprocessInfo (step : CompilationStep) : SubprocessCmdInf
     endPos := step.endPos.byteIdx
     definedConstants := (getNewConstants step).toArray.map (·.toString)
     referencedConstants := (getReferencedConstants step).toArray.map (·.toString)
-    declBodyStartPos := bodyRange.map (·.1)
-    declBodyEndPos := bodyRange.map (·.2)
+    declBodyStartPos := bodyRange.map (·.1.byteIdx)
+    declBodyEndPos := bodyRange.map (·.2.byteIdx)
   }
 
 /-- Check if the header uses the module system (has `module` keyword) -/
@@ -422,9 +363,10 @@ private partial def findProjectRootImpl (startPath : System.FilePath) : IO (Opti
     | none => return none
     | some parent => findProjectRootImpl parent
 
-/-- Run `lean-minimizer --header-info` in a subprocess to parse header without elaboration.
-    This avoids [init] conflicts since it doesn't call processHeader. -/
-def runHeaderInfoSubprocess (source : String) (fileName : String) : IO SubprocessHeaderResult := do
+/-- Common setup for subprocess execution: create temp file and find project root.
+    Returns (tempFilePath, projectRoot). The caller must clean up the temp file. -/
+private def setupSubprocessExecution (source : String) (fileName : String) :
+    IO (System.FilePath × System.FilePath) := do
   -- Create temp file in the same directory as the source file to preserve relative imports
   let fileDir := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
   let timestamp ← IO.monoNanosNow
@@ -449,20 +391,24 @@ def runHeaderInfoSubprocess (source : String) (fileName : String) : IO Subproces
       | some root => pure root
       | none => pure (← IO.currentDir)
 
-  -- Run lake env minimize --header-info with the pre-compiled binary
+  return (tempSource, projectRoot)
+
+/-- Run `lean-minimizer --header-info` in a subprocess to parse header without elaboration.
+    This avoids [init] conflicts since it doesn't call processHeader. -/
+def runHeaderInfoSubprocess (source : String) (fileName : String) : IO SubprocessHeaderResult := do
+  let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
+
   let result ← IO.Process.output {
     cmd := "lake"
     args := #["env", "minimize", "--header-info", tempSource.toString]
     cwd := some projectRoot
   }
 
-  -- Clean up temp file
   IO.FS.removeFile tempSource
 
   if result.exitCode != 0 then
     throw <| IO.userError s!"Header info subprocess failed:\n{result.stderr}"
 
-  -- Parse JSON output
   match Json.parse result.stdout with
   | .error err => throw <| IO.userError s!"Failed to parse header info output: {err}\nOutput: {result.stdout}"
   | .ok json =>
@@ -473,54 +419,25 @@ def runHeaderInfoSubprocess (source : String) (fileName : String) : IO Subproces
 /-- Run `lean-minimizer --analyze` in a subprocess to fully elaborate the file.
     This spawns a fresh process where processHeader is called exactly once. -/
 def runAnalyzeSubprocess (source : String) (fileName : String) : IO SubprocessFrontendResult := do
-  -- Create temp file in the same directory as the source file to preserve relative imports
-  let fileDir := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
-  let timestamp ← IO.monoNanosNow
-  let rand ← IO.rand 0 999999999
-  let tempSource := fileDir / s!".lean-minimize-source-{timestamp}-{rand}.lean"
+  let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
-  IO.FS.writeFile tempSource source
-
-  -- Find the project root of the file being minimized
-  let absoluteFilePath ← do
-    let fp := System.FilePath.mk fileName
-    if fp.isAbsolute then pure fp
-    else do
-      let cwd ← IO.currentDir
-      pure (cwd / fp)
-
-  let projectRoot ← do
-    match absoluteFilePath.parent with
-    | none => pure (← IO.currentDir)
-    | some parent =>
-      match ← findProjectRootImpl parent with
-      | some root => pure root
-      | none => pure (← IO.currentDir)
-
-  -- Run lake env minimize --analyze with the pre-compiled binary
   let result ← IO.Process.output {
     cmd := "lake"
     args := #["env", "minimize", "--analyze", tempSource.toString]
     cwd := some projectRoot
   }
 
-  -- Clean up temp file
   IO.FS.removeFile tempSource
 
   if result.exitCode != 0 then
     throw <| IO.userError s!"Analyze subprocess failed:\n{result.stderr}"
 
-  -- Parse JSON output
   match Json.parse result.stdout with
   | .error err => throw <| IO.userError s!"Failed to parse analyze output: {err}\nOutput: {result.stdout}"
   | .ok json =>
     match fromJson? json with
     | .error err => throw <| IO.userError s!"Failed to decode analyze result: {err}"
     | .ok (result : SubprocessFrontendResult) => return result
-
-/-- Backwards compatibility alias -/
-def runFrontendSubprocess (source : String) (fileName : String) : IO SubprocessFrontendResult :=
-  runAnalyzeSubprocess source fileName
 
 /-- Run a pass in a subprocess with full elaboration.
     This spawns a fresh process where processHeader is called exactly once,
@@ -530,56 +447,29 @@ def runFrontendSubprocess (source : String) (fileName : String) : IO SubprocessF
     Only stdout is captured for the JSON result. -/
 def runPassSubprocess (passName : String) (source : String) (fileName : String)
     (marker : String) (verbose : Bool) : IO SubprocessPassResult := do
-  -- Create temp file in the same directory as the source file to preserve relative imports
-  let fileDir := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
-  let timestamp ← IO.monoNanosNow
-  let rand ← IO.rand 0 999999999
-  let tempSource := fileDir / s!".lean-minimize-source-{timestamp}-{rand}.lean"
+  let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
-  IO.FS.writeFile tempSource source
-
-  -- Find the project root of the file being minimized
-  let absoluteFilePath ← do
-    let fp := System.FilePath.mk fileName
-    if fp.isAbsolute then pure fp
-    else do
-      let cwd ← IO.currentDir
-      pure (cwd / fp)
-
-  let projectRoot ← do
-    match absoluteFilePath.parent with
-    | none => pure (← IO.currentDir)
-    | some parent =>
-      match ← findProjectRootImpl parent with
-      | some root => pure root
-      | none => pure (← IO.currentDir)
-
-  -- Build args
   let args := if verbose then
     #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker, "--verbose"]
   else
     #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
 
-  -- Spawn process with inherited stderr (for verbose output) and piped stdout (for JSON)
   let child ← IO.Process.spawn {
     cmd := "lake"
     args
     cwd := some projectRoot
     stdout := .piped
-    stderr := .inherit  -- Forward verbose output to parent's stderr
+    stderr := .inherit
   }
 
-  -- Read stdout for JSON result
   let stdout ← child.stdout.readToEnd
   let exitCode ← child.wait
 
-  -- Clean up temp file
   IO.FS.removeFile tempSource
 
   if exitCode != 0 then
     throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"
 
-  -- Parse JSON output
   match Json.parse stdout with
   | .error err => throw <| IO.userError s!"Failed to parse run-pass output: {err}\nOutput: {stdout}"
   | .ok json =>
