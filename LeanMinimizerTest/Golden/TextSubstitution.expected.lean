@@ -1,5 +1,3 @@
--- Test file for text substitution pass
--- Test that @[simp] and protected in comments are NOT removed
 
 def foo : Nat := 1
 

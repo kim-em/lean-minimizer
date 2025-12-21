@@ -1,5 +1,3 @@
--- Test for header loss when multiple empty scope pairs are removed
--- This comment should be preserved in the output
 
 def needed := 1
 

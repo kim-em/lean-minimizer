@@ -1,5 +1,3 @@
--- Test for empty scope removal pass
--- The empty section should be removed after command deletion removes its contents
 
 def needed := 1
 

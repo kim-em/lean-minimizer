@@ -10,15 +10,17 @@ import LeanMinimizer.Pass
 
 This pass performs various text substitutions to simplify minimized files.
 All mini-passes are batched together - if any makes changes, we restart.
+Replacements are only applied above the invariant section (marker command).
 
 Mini-passes:
-1. lemma → theorem
-2. Type* → Type _
-3. Type _ / Type u → Type
-4. ℕ → Nat, ℤ → Int, ℚ → Rat
-5. Attribute removal (@[...])
-6. Modifier removal (unsafe/protected/private/noncomputable)
-7. Priority removal (from attributes and instances)
+1. Comment removal (/- ... -/, /-- ... -/, -- ...)
+2. lemma → theorem
+3. Type* → Type _
+4. Type _ / Type u → Type
+5. ℕ → Nat, ℤ → Int, ℚ → Rat
+6. Attribute removal (@[...])
+7. Modifier removal (unsafe/protected/private/noncomputable)
+8. Priority removal (from attributes and instances)
 -/
 
 namespace LeanMinimizer
@@ -48,6 +50,8 @@ def applyReplacements (source : String) (rs : Array Replacement) : String :=
 structure MiniPass where
   name : String
   findReplacements : String → Array Replacement
+  /-- If true, don't filter out replacements inside comments (for comment removal pass) -/
+  skipCommentFilter : Bool := false
 
 /-! ## String scanning helpers -/
 
@@ -197,6 +201,64 @@ def scanIdent (source : String) (pos : Nat) : Option (Nat × String) :=
       some (identEnd, String.Pos.Raw.extract source ⟨pos⟩ ⟨identEnd⟩)
 
 /-! ## Mini-pass implementations -/
+
+/-- Find all comments: block comments (including docstrings), and line comments -/
+def findCommentReplacements (source : String) : Array Replacement := Id.run do
+  let mut result := #[]
+  let endPos := source.rawEndPos.byteIdx
+  let mut i := 0
+  while i < endPos do
+    -- Block comments: /- (catches /-, /--, /--!, etc.)
+    if matchesAt source i "/-" then
+      let start := i
+      i := i + 2
+      let mut depth := 1
+      -- Find matching -/ (handling nested comments)
+      while i < endPos && depth > 0 do
+        if i + 1 < endPos then
+          let c1 := String.Pos.Raw.get source ⟨i⟩
+          let c2 := String.Pos.Raw.get source ⟨i + 1⟩
+          if c1 == '/' && c2 == '-' then
+            depth := depth + 1
+            i := i + 2
+            continue
+          else if c1 == '-' && c2 == '/' then
+            depth := depth - 1
+            i := i + 2
+            continue
+        i := i + 1
+      -- Consume trailing whitespace (including newlines)
+      while i < endPos do
+        let c := String.Pos.Raw.get source ⟨i⟩
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' then
+          i := i + 1
+        else
+          break
+      result := result.push { startPos := ⟨start⟩, endPos := ⟨i⟩, replacement := "" }
+    -- Single-line comments: --
+    else if matchesAt source i "--" then
+      -- Walk back to include leading whitespace on the same line (stop at newline or non-whitespace)
+      let mut start := i
+      while start > 0 do
+        let prevChar := String.Pos.Raw.get source ⟨start - 1⟩
+        if prevChar == ' ' || prevChar == '\t' then
+          start := start - 1
+        else
+          break
+      -- Only include leading whitespace if the previous char was a newline (comment is on its own line)
+      -- Otherwise, keep the whitespace (e.g., `foo := 1  -- comment`)
+      let finalStart := if start > 0 && String.Pos.Raw.get source ⟨start - 1⟩ != '\n' then i else start
+      i := i + 2
+      -- Find end of line
+      while i < endPos && String.Pos.Raw.get source ⟨i⟩ != '\n' do
+        i := i + 1
+      -- Include the newline if present
+      if i < endPos then
+        i := i + 1
+      result := result.push { startPos := ⟨finalStart⟩, endPos := ⟨i⟩, replacement := "" }
+    else
+      i := i + 1
+  return result
 
 /-- Find all occurrences of `lemma` keyword -/
 def findLemmaReplacements (source : String) : Array Replacement := Id.run do
@@ -406,8 +468,9 @@ def findInstancePriorityReplacements (source : String) : Array Replacement := Id
 /-! ## Main pass -/
 
 /-- All mini-passes to run.
-    Order matters: priority removal must come before attribute removal. -/
+    Order matters: comment removal first, priority removal before attribute removal. -/
 def miniPasses : Array MiniPass := #[
+  { name := "Comment removal", findReplacements := findCommentReplacements, skipCommentFilter := true },
   { name := "lemma→theorem", findReplacements := findLemmaReplacements },
   { name := "Type*→Type _", findReplacements := findTypeStarReplacements },
   { name := "Type _/Type u→Type", findReplacements := findTypeUniverseReplacements },
@@ -462,13 +525,23 @@ def textSubstitutionPass : Pass where
     if ctx.verbose then
       IO.eprintln "  Running text substitution mini-passes..."
 
+    -- Get the position of the invariant section (marker command)
+    let markerPos := if h : ctx.markerIdx < ctx.subprocessCommands.size then
+      ctx.subprocessCommands[ctx.markerIdx].startPos
+    else
+      source.utf8ByteSize  -- Fallback: allow whole file
+
     for miniPass in miniPasses do
-      -- Compute comment ranges for current source (must recompute after each change)
-      let commentRanges := computeCommentRanges source
       let allReplacements := miniPass.findReplacements source
-      -- Filter out replacements inside comments/strings
-      let replacements := allReplacements.filter fun r =>
-        !isInsideRanges r.startPos.byteIdx commentRanges
+      -- Apply comment filter unless this pass removes comments
+      let replacements := if miniPass.skipCommentFilter then
+        allReplacements
+      else
+        -- Compute comment ranges for current source (must recompute after each change)
+        let commentRanges := computeCommentRanges source
+        allReplacements.filter fun r => !isInsideRanges r.startPos.byteIdx commentRanges
+      -- Filter out replacements at or after the invariant section
+      let replacements := replacements.filter fun r => r.startPos.byteIdx < markerPos
       if !replacements.isEmpty then
         if ctx.verbose then
           IO.eprintln s!"    {miniPass.name}: found {replacements.size} potential replacements"

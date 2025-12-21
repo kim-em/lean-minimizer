@@ -1,5 +1,4 @@
 section LeanMinimizerTest.Golden.BodyReplacementInlined.B
--- B uses h from C to construct a subtype
 def f : { x : Nat // x = 37 } := ⟨37, sorry⟩
 end LeanMinimizerTest.Golden.BodyReplacementInlined.B
 

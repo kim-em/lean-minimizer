@@ -5,3 +5,4 @@ def bar := 100
 /-- info: (42, 100) -/
 #guard_msgs in
 #eval (foo', bar)
+

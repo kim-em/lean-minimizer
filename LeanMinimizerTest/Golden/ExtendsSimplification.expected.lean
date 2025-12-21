@@ -1,5 +1,3 @@
--- Test: structure C extends B should be simplified to extends A
--- since B only passes through fields from A
 
 structure A where
   a : Nat
