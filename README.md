@@ -111,15 +111,15 @@ This is useful when a structure extends multiple parents but only needs fields f
 
 ### Pass 8: Import Inlining
 
-Inlines project-local imports to create self-contained test files:
+Inlines imports to create self-contained test files:
 
-1. Resolves each import to its source file within the project
+1. Resolves each import to its source file (checking both project root and `.lake/packages/`)
 2. Wraps the imported content in `section ModuleName...end ModuleName`
 3. Adds required `end` statements for any unclosed namespaces/sections
 4. Moves the imported module's imports to the top of the file
 5. Strips `module` keyword and import modifiers when needed
 
-This pass only inlines imports from within the same project - external library imports are left as-is.
+This pass inlines any import whose source file can be found, including dependencies in `.lake/packages/`.
 
 ### Pass Framework
 
