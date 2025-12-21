@@ -188,6 +188,12 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       passIdx := passIdx + 1
       continue
 
+    -- Verify source actually changed when pass claims it did
+    if result.source == source then
+      throw <| IO.userError s!"FATAL: Pass '{pass.name}' reported changes but source is unchanged.\n\
+        This is a bug in the pass implementation. The pass returned changed=true \
+        but the source text is identical to the input."
+
     source := result.source
 
     -- Write updated source to output file if specified

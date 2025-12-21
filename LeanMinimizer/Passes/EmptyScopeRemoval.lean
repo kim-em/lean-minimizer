@@ -53,24 +53,34 @@ def getEndName? (stx : Syntax) : Option Name :=
   else
     none
 
-/-- Reconstruct source from compilation steps using their recorded positions. -/
+/-- Reconstruct source from compilation steps using their recorded positions.
+
+    Only includes gaps between steps that are consecutive in the original ordering
+    (i.e., steps where `idx` values differ by exactly 1). This ensures that when
+    steps are removed, their content is properly excluded from the reconstruction. -/
 def reconstructSourceFromSteps (source : String) (steps : Array CompilationStep) : String := Id.run do
   if steps.isEmpty then
     return ""
 
   let mut result := ""
   let mut lastEnd : String.Pos.Raw := 0
+  let mut prevIdx : Option Nat := none
 
   for step in steps do
-    -- Add any whitespace/content between last command and this one
     let startPos := step.startPos
-    if startPos > lastEnd then
+    -- Only add gap if steps are consecutive in original ordering
+    -- (i.e., no removed steps between them)
+    let shouldAddGap := match prevIdx with
+      | none => step.idx == 0  -- First: only if original first step
+      | some p => step.idx == p + 1  -- Otherwise: only if consecutive
+    if shouldAddGap && startPos > lastEnd then
       result := result ++ String.Pos.Raw.extract source lastEnd startPos
 
     -- Add the command text
     result := result ++ String.Pos.Raw.extract source step.startPos step.endPos
 
     lastEnd := step.endPos
+    prevIdx := some step.idx
 
   -- Add any trailing content after last command
   if lastEnd < source.rawEndPos then
