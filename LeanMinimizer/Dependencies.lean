@@ -77,6 +77,7 @@ partial def processAllCommands (idx : Nat := 0) (startPos : String.Pos.Raw) :
 
 /-- Run the frontend on input, returning FrontendResult with header and all CompilationSteps. -/
 unsafe def runFrontend (input : String) (fileName : String) : IO FrontendResult := do
+  enableInitializersExecution
   let inputCtx := Parser.mkInputContext input fileName
   let (header, parserState, messages) ← Parser.parseHeader inputCtx
 
