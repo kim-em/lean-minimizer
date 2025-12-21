@@ -40,14 +40,14 @@ unsafe def deletionPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Analyzing dependencies from pre-elaborated data..."
 
-    -- Use pre-elaborated steps to compute dependency reachability
-    let stepsBeforeMarker := ctx.steps.filter (·.idx < ctx.markerIdx)
-    let invariantSteps := ctx.steps.filter (·.idx ≥ ctx.markerIdx)
+    -- Use subprocess command info to compute dependency reachability
+    let commandsBeforeMarker := ctx.subprocessCommands.filter (·.idx < ctx.markerIdx)
+    let invariantCommands := ctx.subprocessCommands.filter (·.idx ≥ ctx.markerIdx)
 
     -- Build dependency graph and find reachable commands
-    let analyses := analyzeSteps stepsBeforeMarker
+    let analyses := analyzeSubprocessCommands commandsBeforeMarker
     let deps := buildDependencyMap analyses
-    let invariantDeps := findInvariantDependencies stepsBeforeMarker invariantSteps
+    let invariantDeps := findInvariantDependenciesFromSubprocess commandsBeforeMarker invariantCommands
     let reachable := computeReachable deps invariantDeps
 
     if ctx.verbose then

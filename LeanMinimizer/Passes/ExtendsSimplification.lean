@@ -251,6 +251,7 @@ def tryCompileWithSorryFieldRemoval (source : String) (fileName : String) (verbo
 def extendsSimplificationPass : Pass where
   name := "Extends Simplification"
   cliFlag := "extends"
+  needsSubprocess := true
   run := fun ctx => do
     if ctx.verbose then
       IO.eprintln s!"  Looking for structures with extends clauses..."

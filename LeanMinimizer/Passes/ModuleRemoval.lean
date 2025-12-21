@@ -78,7 +78,9 @@ unsafe def moduleRemovalPass : Pass where
   cliFlag := "module-removal"
   run := fun ctx => do
     -- Check if file uses module system
-    if !headerHasModule ctx.header then
+    -- Use the subprocess-provided flag if available, otherwise check syntax
+    let hasModule := ctx.hasModule || headerHasModule ctx.header
+    if !hasModule then
       if ctx.verbose then
         IO.eprintln "  File does not use module system, skipping"
       return { source := ctx.source, changed := false, action := .continue }
@@ -86,8 +88,10 @@ unsafe def moduleRemovalPass : Pass where
     if ctx.verbose then
       IO.eprintln "  File uses module system, attempting removal..."
 
-    -- Reconstruct header without module keyword and modifiers
-    let newHeader := reconstructHeaderWithoutModule ctx.header
+    -- Use pre-computed header without module (from subprocess) if available
+    let newHeader := if ctx.headerWithoutModule.isEmpty
+      then reconstructHeaderWithoutModule ctx.header
+      else ctx.headerWithoutModule
 
     -- Get the commands part (everything after the header)
     let commandsPart := String.Pos.Raw.extract ctx.source ctx.headerEndPos ctx.source.rawEndPos

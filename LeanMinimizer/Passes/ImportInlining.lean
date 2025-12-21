@@ -296,9 +296,11 @@ unsafe def importInliningPass : Pass where
   name := "Import Inlining"
   cliFlag := "import-inlining"
   run := fun ctx => do
-    let usesModule := headerUsesModuleSystem ctx.header
-    let hasPrelude := headerHasPrelude ctx.header
-    let imports := extractImports ctx.header
+    -- Use subprocess-provided flags when available, otherwise check syntax
+    let usesModule := ctx.hasModule || headerUsesModuleSystem ctx.header
+    let hasPrelude := ctx.hasPrelude || headerHasPrelude ctx.header
+    -- Use subprocess-provided imports when available
+    let imports := getImportsFromContext ctx
 
     if imports.isEmpty then
       if ctx.verbose then

@@ -176,35 +176,9 @@ def replaceWithSorry (source : String) (startPos endPos : String.Pos.Raw) : Stri
   before ++ "sorry" ++ after
 
 /-- Test if source compiles successfully using subprocess for memory isolation -/
-def testSourceCompilesForSorry (source : String) (fileName : String) : IO Bool := do
-  -- Create temp file
-  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-sorry-{← IO.monoMsNow}.lean"
-  IO.FS.writeFile tempFile source
-
-  -- Get environment variables for lean
-  let leanPath ← IO.getEnv "LEAN_PATH"
-  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
-  let path ← IO.getEnv "PATH"
-
-  let env : Array (String × Option String) := #[
-    ("LEAN_PATH", leanPath),
-    ("LEAN_SYSROOT", leanSysroot),
-    ("PATH", path)
-  ]
-
-  -- Run lean to check compilation
-  let cwd := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
-  let result ← IO.Process.output {
-    cmd := "lean"
-    args := #[tempFile.toString]
-    env := env
-    cwd := some cwd
-  }
-
-  -- Clean up temp file
-  IO.FS.removeFile tempFile
-
-  return result.exitCode == 0
+def testSourceCompilesForSorry (source : String) (fileName : String) : IO Bool :=
+  -- Use the existing testCompilesSubprocess from Subprocess.lean
+  testCompilesSubprocess source fileName
 
 /-! ## The pass -/
 
@@ -212,17 +186,20 @@ def testSourceCompilesForSorry (source : String) (fileName : String) : IO Bool :
 
     For each declaration before the marker (working upward from just before marker):
     1. Try replacing the entire body with `sorry`
-    2. If that fails and it's a where-structure, try replacing field values individually
+    2. If that fails, try replacing Prop-valued subexpressions with `sorry`
+    3. If that fails and it's a where-structure, try replacing field values with `sorry`
 
     Returns `.restart` on any success to allow other passes to run. -/
 def bodyReplacementPass : Pass where
   name := "Body Replacement"
-  cliFlag := "sorry"
+  cliFlag := "body-replacement"
+  needsSubprocess := true
   run := fun ctx => do
     if ctx.verbose then
       IO.eprintln s!"  Processing {ctx.markerIdx} commands for body replacement..."
 
     -- Process declarations from just before marker going upward
+    -- Use ctx.steps for full syntax and InfoTrees (available in subprocess mode)
     for i in (List.range ctx.markerIdx).reverse do
       let some step := ctx.steps[i]?
         | continue
@@ -246,59 +223,46 @@ def bodyReplacementPass : Pass where
         return { source := newSource, changed := true, action := .restart }
 
       -- Phase 2: Try replacing Prop-valued subexpressions with sorry
+      -- These are subexpressions whose type is Prop (proofs)
       let propSubexprs ← extractPropSubexprs step.trees bodyRange.1 bodyRange.2
-      if !propSubexprs.isEmpty then
-        if ctx.verbose then
-          IO.eprintln s!"    Found {propSubexprs.size} Prop-valued subexpressions..."
+      -- Sort by end position descending to process from right to left
+      let sortedPropSubexprs := propSubexprs.qsort (fun a b => a.2.byteIdx > b.2.byteIdx)
+      -- Filter to unique, non-nested ranges (keep largest containing range for each position)
+      let mut uniquePropRanges : Array (String.Pos.Raw × String.Pos.Raw) := #[]
+      for range in sortedPropSubexprs do
+        -- Skip if this range is contained in a range we already have
+        let isNested := uniquePropRanges.any fun r =>
+          range.1.byteIdx >= r.1.byteIdx && range.2.byteIdx <= r.2.byteIdx
+        if !isNested then
+          uniquePropRanges := uniquePropRanges.push range
 
-        let mut currentSource := ctx.source
-        let mut anyChanged := false
+      for (startPos, endPos) in uniquePropRanges do
+        -- Skip if already sorry
+        if bodyIsSorry ctx.source startPos endPos then
+          continue
+        let newSource := replaceWithSorry ctx.source startPos endPos
+        if ← testSourceCompilesForSorry newSource ctx.fileName then
+          if ctx.verbose then
+            IO.eprintln s!"    Success: replaced Prop subexpression with sorry"
+          return { source := newSource, changed := true, action := .restart }
 
-        -- Sort by position descending to preserve earlier positions
-        -- Filter out subexprs that are already sorry
-        -- Also deduplicate by removing overlapping ranges (keep larger ones)
-        let sortedRanges := propSubexprs.filter (fun (s, e) => !bodyIsSorry currentSource s e)
-          |>.qsort (fun a b => a.1.byteIdx > b.1.byteIdx)
-
-        for (startPos, endPos) in sortedRanges do
-          -- Skip if this range overlaps with a previously replaced range
-          if bodyIsSorry currentSource startPos endPos then
-            continue
-          let newSource := replaceWithSorry currentSource startPos endPos
-          if ← testSourceCompilesForSorry newSource ctx.fileName then
-            if ctx.verbose then
-              IO.eprintln s!"      Replaced Prop subexpr at {startPos.byteIdx}-{endPos.byteIdx}"
-            currentSource := newSource
-            anyChanged := true
-
-        if anyChanged then
-          return { source := currentSource, changed := true, action := .restart }
-
-      -- Phase 3: For where-structures, try replacing field values
-      if let some inner := getInnerDecl? step.stx then
-        if let some declVal := findDeclVal? inner then
-          if declVal.isOfKind `Lean.Parser.Command.whereStructInst then
-            let fieldRanges := getWhereFieldValueRanges declVal
-            if ctx.verbose && !fieldRanges.isEmpty then
-              IO.eprintln s!"    Trying {fieldRanges.size} field values..."
-
-            let mut currentSource := ctx.source
-            let mut anyChanged := false
-
-            -- Sort by position descending to preserve earlier positions
-            -- Filter out fields that are already sorry
-            let sortedRanges := fieldRanges.filter (fun (s, e) => !bodyIsSorry currentSource s e)
-              |>.qsort (fun a b => a.1.byteIdx > b.1.byteIdx)
-            for (startPos, endPos) in sortedRanges do
-              let newSource := replaceWithSorry currentSource startPos endPos
-              if ← testSourceCompilesForSorry newSource ctx.fileName then
-                if ctx.verbose then
-                  IO.eprintln s!"      Replaced field value at {startPos.byteIdx}-{endPos.byteIdx}"
-                currentSource := newSource
-                anyChanged := true
-
-            if anyChanged then
-              return { source := currentSource, changed := true, action := .restart }
+      -- Phase 3: For where-structures, try replacing individual field values
+      let inner := getInnerDecl? step.stx
+      let declVal := inner.bind findDeclVal?
+      if let some dv := declVal then
+        if dv.isOfKind `Lean.Parser.Command.whereStructInst then
+          let fieldRanges := getWhereFieldValueRanges dv
+          -- Sort by end position descending to process from right to left
+          let sortedFieldRanges := fieldRanges.qsort (fun a b => a.2.byteIdx > b.2.byteIdx)
+          for (startPos, endPos) in sortedFieldRanges do
+            -- Skip if already sorry
+            if bodyIsSorry ctx.source startPos endPos then
+              continue
+            let newSource := replaceWithSorry ctx.source startPos endPos
+            if ← testSourceCompilesForSorry newSource ctx.fileName then
+              if ctx.verbose then
+                IO.eprintln s!"    Success: replaced where-structure field with sorry"
+              return { source := newSource, changed := true, action := .restart }
 
     -- No changes possible
     if ctx.verbose then

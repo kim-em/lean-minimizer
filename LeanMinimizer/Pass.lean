@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Kim Morrison
 -/
 import LeanMinimizer.Dependencies
+import LeanMinimizer.Subprocess
 
 /-!
 # Multi-Pass Minimization Framework
@@ -43,8 +44,18 @@ structure PassContext where
   header : Syntax
   /-- End position of header -/
   headerEndPos : String.Pos.Raw
+  /-- Whether the header has a `module` keyword (for subprocess mode) -/
+  hasModule : Bool := false
+  /-- Whether the header has `prelude` (for subprocess mode) -/
+  hasPrelude : Bool := false
+  /-- Header reconstructed without module keyword and import modifiers (for subprocess mode) -/
+  headerWithoutModule : String := ""
+  /-- Imports extracted from header (for subprocess mode) -/
+  imports : Array SubprocessImportInfo := #[]
   /-- Full elaboration data for all commands (with positions) -/
   steps : Array CompilationStep
+  /-- Subprocess command info with dependency data (for passes that need it) -/
+  subprocessCommands : Array SubprocessCmdInfo := #[]
   /-- Index of the marker command -/
   markerIdx : Nat
   /-- Output file path for intermediate results (optional) -/
@@ -66,6 +77,10 @@ structure Pass where
   name : String
   /-- CLI flag name (for --no-{cliFlag}) -/
   cliFlag : String
+  /-- Whether this pass needs to run in a subprocess with full elaboration.
+      Tier 2 passes (body-replacement, extends, import-minimization) need this
+      because they require Environment/InfoTrees that can't easily be serialized. -/
+  needsSubprocess : Bool := false
   /-- Run the pass -/
   run : PassContext → IO PassResult
 
@@ -103,7 +118,19 @@ def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
     outputFile := ctx.outputFile
   }
 
-/-- Run passes in sequence according to their on-success actions -/
+/-- Convert SubprocessPassResult to PassResult -/
+def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResult :=
+  let action := match result.action with
+    | "restart" => PassAction.restart
+    | "repeat" => PassAction.repeat
+    | _ => PassAction.continue  -- Default to continue for unknown values
+  { source := result.source, changed := result.changed, action }
+
+/-- Run passes in sequence according to their on-success actions.
+    Uses subprocess-based elaboration to avoid [init] conflicts.
+
+    Tier 1 passes run in the orchestrator with serialized data.
+    Tier 2 passes (needsSubprocess=true) run in a subprocess with full elaboration. -/
 unsafe def runPasses (passes : Array Pass) (input : String)
     (fileName : String) (marker : String) (verbose : Bool)
     (outputFile : Option String := none) : IO String := do
@@ -126,20 +153,34 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     if verbose then
       IO.eprintln s!"[Pass {passIdx}] Running: {pass.name}"
 
-    -- Elaborate the current source
-    let frontend ← runFrontend source fileName
-    let some markerIdx := findMarkerIdxInSteps frontend.steps marker
-      | throw <| IO.userError (markerNotFoundError marker)
+    let result ← if pass.needsSubprocess then
+      -- Tier 2 pass: run in subprocess with full elaboration
+      let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose
+      pure subResult.toPassResult
+    else
+      -- Tier 1 pass: run in orchestrator with serialized data
+      -- Elaborate the current source via subprocess to avoid [init] conflicts
+      let subprocessResult ← runFrontendSubprocess source fileName
+      let some markerIdx := findMarkerIdxInSubprocessSteps subprocessResult.commands marker
+        | throw <| IO.userError (markerNotFoundError marker)
 
-    let ctx : PassContext := {
-      source, fileName, marker, verbose
-      header := frontend.header
-      headerEndPos := frontend.headerEndPos
-      steps := frontend.steps
-      markerIdx
-      outputFile
-    }
-    let result ← pass.run ctx
+      -- Convert subprocess result to PassContext data
+      let (header, headerEndPos, steps) ← subprocessResult.toPassContextData
+
+      let ctx : PassContext := {
+        source, fileName, marker, verbose
+        header
+        headerEndPos
+        hasModule := subprocessResult.hasModule
+        hasPrelude := subprocessResult.hasPrelude
+        headerWithoutModule := subprocessResult.headerWithoutModule
+        imports := subprocessResult.imports
+        steps
+        subprocessCommands := subprocessResult.commands
+        markerIdx
+        outputFile
+      }
+      pass.run ctx
 
     if !result.changed then
       if verbose then

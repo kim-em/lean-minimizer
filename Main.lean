@@ -1,5 +1,6 @@
 import LeanMinimizer
 import LeanMinimizer.Pass
+import LeanMinimizer.Subprocess
 import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
@@ -10,6 +11,102 @@ import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining
 
 open Lean LeanMinimizer
+
+/-- Handle --header-info subcommand (for subprocess invocation).
+    This runs in a clean process to parse just the header and output JSON.
+    Does NOT call processHeader, so there are no [init] conflicts. -/
+def handleHeaderInfo (file : String) : IO UInt32 := do
+  try
+    let source ← IO.FS.readFile file
+    parseHeaderAndOutputJson source file
+    return 0
+  catch e =>
+    IO.eprintln s!"Header parsing error: {e}"
+    return 1
+
+/-- Handle --analyze subcommand (for subprocess invocation).
+    This runs in a clean process to elaborate a file and output JSON.
+    Calls processHeader ONCE, so must be run in a fresh subprocess. -/
+unsafe def handleAnalyze (file : String) : IO UInt32 := do
+  initSearchPath (← findSysroot)
+  try
+    let source ← IO.FS.readFile file
+    elaborateAndOutputJson source file
+    return 0
+  catch e =>
+    IO.eprintln s!"Elaboration error: {e}"
+    return 1
+
+/-- Registry of passes that run in subprocess mode with full elaboration. -/
+unsafe def subprocessPassRegistry : Array (String × Pass) := #[
+  ("body-replacement", bodyReplacementPass),
+  ("extends", extendsSimplificationPass),
+  ("import-minimization", importMinimizationPass)
+]
+
+private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : String) (verbose : Bool) : IO Unit := do
+  -- Read and elaborate
+  let source ← IO.FS.readFile file
+  let result ← runFrontend source file
+
+  -- Find marker
+  let some markerIdx := findMarkerIdxInSteps result.steps marker
+    | throw <| IO.userError (markerNotFoundError marker)
+
+  -- Build PassContext with full elaboration data
+  let ctx : PassContext := {
+    source
+    fileName := file
+    marker
+    verbose
+    header := result.header
+    headerEndPos := result.headerEndPos
+    hasModule := headerUsesModuleSystem result.header
+    hasPrelude := headerHasPrelude result.header
+    headerWithoutModule := reconstructHeader false false (extractImports result.header) false
+    imports := (extractImports result.header).map fun imp =>
+      { moduleName := imp.moduleName.toString, isPublic := false, isMeta := false, isAll := false }
+    steps := result.steps
+    subprocessCommands := result.steps.map (·.toSubprocessInfo)
+    markerIdx
+    outputFile := none
+  }
+
+  -- Run the pass
+  let passResult ← pass.run ctx
+
+  -- Output JSON result
+  let actionStr := match passResult.action with
+    | .restart => "restart"
+    | .repeat => "repeat"
+    | .continue => "continue"
+  let jsonResult : SubprocessPassResult := {
+    source := passResult.source
+    changed := passResult.changed
+    action := actionStr
+  }
+  IO.println (toJson jsonResult).compress
+
+private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) (verbose : Bool) : IO UInt32 := do
+  try
+    runPassInnerCore pass file marker verbose
+    return 0
+  catch e =>
+    IO.eprintln s!"Run-pass error: {e}"
+    return 1
+
+/-- Handle --run-pass subcommand (for subprocess invocation).
+    This runs a specific pass with full elaboration data.
+    Calls processHeader ONCE, runs the pass, outputs JSON result. -/
+unsafe def handleRunPass (passName : String) (file : String) (marker : String) (verbose : Bool) : IO UInt32 := do
+  initSearchPath (← findSysroot)
+
+  -- Find the pass
+  match subprocessPassRegistry.find? (·.1 == passName) with
+  | none =>
+    IO.eprintln s!"Unknown pass: {passName}"
+    return 1
+  | some (_, pass) => runPassInner pass file marker verbose
 
 /-- Build the list of passes based on command line arguments.
     Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Extends Simplification → Import Minimization → Import Inlining -/
@@ -26,6 +123,17 @@ unsafe def buildPassList (args : Args) : Array Pass :=
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do
+  -- Handle subprocess subcommands early (before normal arg parsing)
+  -- These are used when the minimizer spawns itself as a subprocess
+  match args with
+  | ["--header-info", file] => return ← handleHeaderInfo file
+  | ["--analyze", file] => return ← handleAnalyze file
+  | ["--run-pass", passName, file, "--marker", marker] =>
+      return ← handleRunPass passName file marker false
+  | ["--run-pass", passName, file, "--marker", marker, "--verbose"] =>
+      return ← handleRunPass passName file marker true
+  | _ => pure ()
+
   initSearchPath (← findSysroot)
   match parseArgs args with
   | .error msg =>

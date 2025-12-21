@@ -32,6 +32,17 @@ structure ImportInfo where
   isAll : Bool := false
   deriving Repr, BEq, Hashable, Inhabited
 
+/-- Convert SubprocessImportInfo to ImportInfo -/
+def SubprocessImportInfo.toImportInfo (info : SubprocessImportInfo) : ImportInfo :=
+  { moduleName := info.moduleName.toName
+    isPublic := info.isPublic
+    isMeta := info.isMeta
+    isAll := info.isAll }
+
+/-- Convert an array of SubprocessImportInfo to ImportInfo -/
+def subprocessImportsToImportInfo (imports : Array SubprocessImportInfo) : Array ImportInfo :=
+  imports.map (·.toImportInfo)
+
 /-- Check if the header uses the module system (has `module` keyword) -/
 def headerUsesModuleSystem (header : Syntax) : Bool :=
   if header.getNumArgs > 0 then
@@ -95,6 +106,13 @@ def extractImports (header : Syntax) : Array ImportInfo := Id.run do
         result := result.push info
   return result
 
+/-- Get imports from context, preferring subprocess data if available -/
+def getImportsFromContext (ctx : PassContext) : Array ImportInfo :=
+  if ctx.imports.isEmpty then
+    extractImports ctx.header
+  else
+    subprocessImportsToImportInfo ctx.imports
+
 /-- Convert an Import from the environment to ImportInfo -/
 def leanImportToInfo (imp : Import) : ImportInfo :=
   { moduleName := imp.module
@@ -151,9 +169,11 @@ def getModuleImports (env : Environment) (modName : Name) : Option (Array Import
 unsafe def importMinimizationPass : Pass where
   name := "Import Minimization"
   cliFlag := "import-minimization"
+  needsSubprocess := true
   run := fun ctx => do
-    let usesModule := headerUsesModuleSystem ctx.header
-    let hasPrelude := headerHasPrelude ctx.header
+    -- Use subprocess-provided flags when available, otherwise check syntax
+    let usesModule := ctx.hasModule || headerUsesModuleSystem ctx.header
+    let hasPrelude := ctx.hasPrelude || headerHasPrelude ctx.header
 
     -- Track imports we've already tried and failed to remove/replace
     let mut triedAndFailed : Std.HashSet Name := {}
