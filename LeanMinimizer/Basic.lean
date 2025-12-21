@@ -412,76 +412,103 @@ def writeProgress (state : MinState) (keepIndices : Array Nat) : IO Unit := do
 /-- Delta debugging algorithm to find minimal required commands.
 
     The `heuristic` parameter controls how candidates are split at each step.
-    Use `defaultSplitHeuristic` for standard binary splitting. -/
-unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : Array Nat) :
-    IO (Array Nat) := do
-  -- Base case: empty or single element
+    Use `defaultSplitHeuristic` for standard binary splitting.
+
+    This implementation is END-BIASED: it tries to remove later commands first,
+    which works better for forward-declared code where later items depend on earlier ones.
+
+    Parameters:
+    - `candidates`: indices we're trying to remove
+    - `currentlyKept`: all indices currently being kept (updated as we successfully remove items)
+
+    Returns: the final set of indices that must be kept -/
+unsafe def ddminCore (heuristic : SplitHeuristic) (state : MinState)
+    (candidates : Array Nat) (currentlyKept : Array Nat) : IO (Array Nat) := do
+  -- Base case: no candidates to try removing
   if candidates.size == 0 then
-    return #[]
+    return currentlyKept
 
   if candidates.size == 1 then
     -- Try removing this single command
+    let idx := candidates[0]!
+    let withoutThis := currentlyKept.filter (· != idx)
     if state.verbose then
-      IO.eprintln s!"  Testing: try remove [{candidates[0]!}]"
-    let others := (Array.range state.markerIdx).filter (· ∉ candidates)
-    if (← testCompiles state others) then
+      IO.eprintln s!"  Testing: try remove [{idx}]"
+    if (← testCompiles state withoutThis) then
       if state.verbose then
-        IO.eprintln s!"    → Success: removed [{candidates[0]!}]"
-      writeProgress state others
-      return #[]
+        IO.eprintln s!"    → Success: removed [{idx}]"
+      writeProgress state withoutThis
+      return withoutThis
     if state.verbose then
-      IO.eprintln s!"    → Failed: must keep [{candidates[0]!}]"
-    return candidates
+      IO.eprintln s!"    → Failed: must keep [{idx}]"
+    return currentlyKept
 
   -- Use heuristic to split candidates
   let (firstHalf, secondHalf) ← heuristic state candidates
 
+  -- END-BIASED: Try removing second half (later indices) first!
+  -- This works better for forward-declared code where later items depend on earlier ones.
+  let withoutSecond := currentlyKept.filter (!secondHalf.contains ·)
   if state.verbose then
-    IO.eprintln s!"  Testing: try remove {firstHalf.toList} (keep {secondHalf.toList})"
-
-  -- Try keeping only second half (removing first half)
-  let withoutFirst := (Array.range state.markerIdx).filter (!firstHalf.contains ·)
-  if (← testCompiles state withoutFirst) then
-    if state.verbose then
-      IO.eprintln s!"    → Success: removed {firstHalf.toList}, recursing on {secondHalf.toList}"
-    writeProgress state withoutFirst
-    return ← ddmin heuristic state secondHalf
-
-  if state.verbose then
-    IO.eprintln s!"    → Failed, trying: remove {secondHalf.toList} (keep {firstHalf.toList})"
-
-  -- Try keeping only first half (removing second half)
-  let withoutSecond := (Array.range state.markerIdx).filter (!secondHalf.contains ·)
+    IO.eprintln s!"  Testing: try remove {secondHalf.toList} (keep {firstHalf.toList})"
   if (← testCompiles state withoutSecond) then
     if state.verbose then
       IO.eprintln s!"    → Success: removed {secondHalf.toList}, recursing on {firstHalf.toList}"
     writeProgress state withoutSecond
-    return ← ddmin heuristic state firstHalf
+    return ← ddminCore heuristic state firstHalf withoutSecond
+
+  -- Try removing first half
+  let withoutFirst := currentlyKept.filter (!firstHalf.contains ·)
+  if state.verbose then
+    IO.eprintln s!"    → Failed, trying: remove {firstHalf.toList} (keep {secondHalf.toList})"
+  if (← testCompiles state withoutFirst) then
+    if state.verbose then
+      IO.eprintln s!"    → Success: removed {firstHalf.toList}, recursing on {secondHalf.toList}"
+    writeProgress state withoutFirst
+    return ← ddminCore heuristic state secondHalf withoutFirst
 
   -- Both halves are needed; recurse on each
+  -- Process second half first (end-biased), then first half with updated kept set
   if state.verbose then
     IO.eprintln s!"    → Failed: both halves needed, recursing on each"
 
-  let keptFirst ← ddmin heuristic state firstHalf
-  let keptSecond ← ddmin heuristic state secondHalf
-  return keptFirst ++ keptSecond
+  let afterSecond ← ddminCore heuristic state secondHalf currentlyKept
+  let afterFirst ← ddminCore heuristic state firstHalf afterSecond
+  return afterFirst
+
+/-- Delta debugging algorithm to find minimal required commands.
+
+    The `heuristic` parameter controls how candidates are split at each step.
+    Use `defaultSplitHeuristic` for standard binary splitting.
+
+    Returns: the indices that must be kept (subset of candidates) -/
+unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : Array Nat) :
+    IO (Array Nat) := do
+  -- Start with ALL indices before marker as currently kept (not just candidates).
+  -- This ensures scope commands (section/namespace/end) that aren't in candidates
+  -- are still included when testing compilation.
+  let allIndices := Array.range state.markerIdx
+  let finalKept ← ddminCore heuristic state candidates allIndices
+  -- Return only the candidates that were kept (filter out non-candidate indices like scopes)
+  return finalKept.filter (candidates.contains ·)
 
 /-- Create a split heuristic that uses pre-computed reachability data.
-    Commands not in `reachable` are tried for removal first. -/
+    Commands not in `reachable` are tried for removal first.
+
+    Since ddmin is end-biased (tries removing secondHalf first), we return
+    (reachable, unreachable) so that unreachable commands are tried for removal first. -/
 def precomputedDependencyHeuristic (reachable : Array Nat) : SplitHeuristic := fun state candidates => do
-  -- Only use dependency info at top level; fall back to default for recursive calls
-  if candidates.size < state.markerIdx then
+  let unreachable := candidates.filter fun idx => !reachable.contains idx
+  let reachableInCandidates := candidates.filter fun idx => reachable.contains idx
+
+  if state.verbose then
+    IO.eprintln s!"  Pre-computed deps: {reachableInCandidates.size} reachable, {unreachable.size} likely removable"
+
+  -- If we have both reachable and unreachable, split by reachability.
+  -- Return (reachable, unreachable) so end-biased ddmin tries removing unreachable first.
+  if unreachable.isEmpty || reachableInCandidates.isEmpty then
     defaultSplitHeuristic state candidates
   else
-    let unreachable := candidates.filter fun idx => !reachable.contains idx
-    let reachableInCandidates := candidates.filter fun idx => reachable.contains idx
-
-    if state.verbose then
-      IO.eprintln s!"  Pre-computed deps: {reachable.size} reachable, {unreachable.size} likely removable"
-
-    if unreachable.isEmpty || reachableInCandidates.isEmpty then
-      defaultSplitHeuristic state candidates
-    else
-      return (unreachable, reachableInCandidates)
+    return (reachableInCandidates, unreachable)
 
 end LeanMinimizer

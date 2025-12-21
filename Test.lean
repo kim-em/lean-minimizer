@@ -13,6 +13,7 @@ import LeanMinimizerTest.Component.GetReferencedConstants
 import LeanMinimizerTest.Component.BuildDependencyMap
 import LeanMinimizerTest.Component.ComputeReachable
 import LeanMinimizerTest.Component.DependencyHeuristic
+import LeanMinimizerTest.Component.DdminIdempotent
 import LeanMinimizerTest.Golden
 
 open Lean System LeanMinimizer
@@ -446,7 +447,8 @@ unsafe def runComponentTests : IO (Nat × Nat) := do
     LeanMinimizerTest.Component.GetReferencedConstants.test,
     LeanMinimizerTest.Component.BuildDependencyMap.test,
     LeanMinimizerTest.Component.ComputeReachable.test,
-    LeanMinimizerTest.Component.DependencyHeuristic.test
+    LeanMinimizerTest.Component.DependencyHeuristic.test,
+    LeanMinimizerTest.Component.DdminIdempotent.test
   ]
 
   for test in tests do
