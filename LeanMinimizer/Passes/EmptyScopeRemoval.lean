@@ -19,6 +19,24 @@ namespace LeanMinimizer
 
 open Lean
 
+/-- Extract name after a keyword from reprinted syntax string.
+    For synthetic nodes created by subprocess execution, the syntax structure
+    may not have proper args, but the reprinted string contains the full text.
+    E.g., for "namespace Foo", returns `Foo`. -/
+def parseNameFromRepr (keyword : String) (repr : String) : Option Name := do
+  -- Find the keyword in the reprinted string
+  let repr := repr.trim
+  if !repr.startsWith keyword then failure
+  -- Get the rest after the keyword
+  let rest := (repr.drop keyword.length).trim
+  if rest.isEmpty then
+    return Name.anonymous
+  -- The name is the first word after the keyword
+  let name := rest.takeWhile (fun c => !c.isWhitespace)
+  if name.isEmpty then
+    return Name.anonymous
+  return name.toName
+
 /-- Check if a command is a section command, returning the section name if so. -/
 def getSectionName? (stx : Syntax) : Option Name :=
   if stx.isOfKind `Lean.Parser.Command.section then
@@ -27,7 +45,10 @@ def getSectionName? (stx : Syntax) : Option Name :=
     if args.size > 1 && !args[1]!.isNone then
       some args[1]!.getId
     else
-      some Name.anonymous
+      -- Fallback: parse from reprinted string for synthetic nodes
+      match stx.reprint with
+      | some repr => parseNameFromRepr "section" repr
+      | none => some Name.anonymous
   else
     none
 
@@ -38,7 +59,10 @@ def getNamespaceName? (stx : Syntax) : Option Name :=
     if args.size > 1 then
       some args[1]!.getId
     else
-      none
+      -- Fallback: parse from reprinted string for synthetic nodes
+      match stx.reprint with
+      | some repr => parseNameFromRepr "namespace" repr
+      | none => none
   else
     none
 
@@ -49,7 +73,10 @@ def getEndName? (stx : Syntax) : Option Name :=
     if args.size > 1 && !args[1]!.isNone then
       some args[1]!.getId
     else
-      some Name.anonymous
+      -- Fallback: parse from reprinted string for synthetic nodes
+      match stx.reprint with
+      | some repr => parseNameFromRepr "end" repr
+      | none => some Name.anonymous
   else
     none
 
