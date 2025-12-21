@@ -40,14 +40,15 @@ lake exe lean --run /tmp/run_test.lean
 
 **Do NOT run `lake exe test --accept` yourself.** If test output has changed, suggest the accept command to the user for them to review and run.
 
+To accept a specific test (works for both Golden and CLI tests):
+```bash
+lake exe test --accept LeanMinimizerTest/Golden/SomeTest.lean
+lake exe test --accept LeanMinimizerTest/CLI/SomeTest.lean
+```
+
 To accept all changed test outputs:
 ```bash
 lake exe test --accept
-```
-
-To accept a specific golden test:
-```bash
-lake exe test --accept SomeTest.lean
 ```
 
 The user must review the diff and decide whether to accept the new output.

@@ -344,14 +344,14 @@ def acceptCLITest (testFile : FilePath) : IO Unit := do
       IO.FS.writeFile expectedErrFile produced
       IO.println s!"  Updated: {expectedErrFile}"
 
-/-- Run all CLI tests. Returns (passed, failed).
+/-- Run all CLI tests. Returns (passed, failed, failedPaths).
     If acceptFilter is some, only accept tests matching the filter. -/
-def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat) := do
+def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat × Array FilePath) := do
   let cliFiles ← findCLITestFilesIn cliDir
 
   if cliFiles.isEmpty then
     IO.eprintln s!"Warning: No CLI test files found in {cliDir}"
-    return (0, 0)
+    return (0, 0, #[])
 
   -- Handle accept mode sequentially
   if let some acceptName := acceptFilter then
@@ -359,11 +359,12 @@ def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat
       let name := testName testFile
       if shouldAccept name acceptName then
         acceptCLITest testFile
-    return (0, 0)
+    return (0, 0, #[])
 
   -- Run all tests in parallel with progressive output
   let passed ← IO.mkRef 0
   let failed ← IO.mkRef 0
+  let failedPaths ← IO.mkRef #[]
 
   runTestsParallelWithProgress cliFiles
     (fun testFile => runCLITest testFile)
@@ -378,22 +379,24 @@ def runCLITests (acceptFilter : Option (Option String) := none) : IO (Nat × Nat
         IO.println ""
         IO.println diff
         failed.modify (· + 1)
+        failedPaths.modify (·.push testFile)
       | .error msg =>
         IO.println s!"  ✗ {name}: {msg}"
         failed.modify (· + 1)
       | .missingExpected =>
         IO.println s!"  ? {name}: missing .expected.lean (run and review, then --accept)"
-        failed.modify (· + 1))
+        failed.modify (· + 1)
+        failedPaths.modify (·.push testFile))
 
-  return (← passed.get, ← failed.get)
+  return (← passed.get, ← failed.get, ← failedPaths.get)
 
-/-- Run all golden tests. Returns (passed, failed, errors). -/
-def runGoldenTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat) := do
+/-- Run all golden tests. Returns (passed, failed, errors, failedPaths). -/
+def runGoldenTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat × Array FilePath) := do
   let goldenFiles ← findTestFilesIn goldenDir
 
   if goldenFiles.isEmpty then
     IO.eprintln s!"Warning: No golden test files found in {goldenDir}"
-    return (0, 0, 0)
+    return (0, 0, 0, #[])
 
   IO.println ""
   IO.println s!"Running {goldenFiles.size} golden tests from {goldenDir}/"
@@ -405,12 +408,13 @@ def runGoldenTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat)
       let name := testName testFile
       if shouldAccept name acceptName then
         acceptGoldenTest testFile
-    return (0, 0, 0)
+    return (0, 0, 0, #[])
 
   -- Run all tests in parallel with progressive output
   let passed ← IO.mkRef 0
   let failed ← IO.mkRef 0
   let errors ← IO.mkRef 0
+  let failedPaths ← IO.mkRef #[]
 
   runTestsParallelWithProgress goldenFiles
     (fun testFile => runGoldenTest testFile)
@@ -425,14 +429,17 @@ def runGoldenTests (acceptArg : Option (Option String)) : IO (Nat × Nat × Nat)
         IO.println ""
         IO.println diff
         failed.modify (· + 1)
+        failedPaths.modify (·.push testFile)
       | .error msg =>
         IO.println s!"  ✗ {name}: {msg}"
         errors.modify (· + 1)
+        failedPaths.modify (·.push testFile)
       | .missingExpected =>
         IO.println s!"  ? {name}: missing .expected.lean (run minimizer and review, then --accept)"
-        errors.modify (· + 1))
+        errors.modify (· + 1)
+        failedPaths.modify (·.push testFile))
 
-  return (← passed.get, ← failed.get, ← errors.get)
+  return (← passed.get, ← failed.get, ← errors.get, ← failedPaths.get)
 
 /-! ## Component Tests -/
 
@@ -486,28 +493,61 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   -- If a specific test file is provided, run only that test
   if let some testFile := specificTest then
+    let testPathStr := testFile.toString
+    let testFileName := testFile.fileName.getD testFile.toString
+
+    -- Handle --accept for specific test
+    if accept then
+      IO.println s!"Accepting test: {testFileName}"
+      IO.println ""
+      if testPathStr.containsSubstr "/Golden/" then
+        acceptGoldenTest testFile
+      else if testPathStr.containsSubstr "/CLI/" then
+        acceptCLITest testFile
+      else
+        IO.eprintln s!"Unknown test type for: {testFile}"
+        return 1
+      IO.println ""
+      IO.println "Done. Review changes and commit."
+      return 0
+
     IO.println s!"Running single test: {testFile}"
     IO.println ""
 
     -- Determine which type of test this is
-    let testPath := testFile.toString
-    if testPath.containsSubstr "/Golden/" then
+    if testPathStr.containsSubstr "/Golden/" then
       -- Regular golden test
       let result ← runGoldenTest testFile
-      let testName := testFile.fileName.getD testFile.toString
       match result with
       | .passed =>
-        IO.println s!"  ✓ {testName}"
+        IO.println s!"  ✓ {testFileName}"
         return 0
       | .failed diff =>
-        IO.println s!"  ✗ {testName}: output differs from expected"
+        IO.println s!"  ✗ {testFileName}: output differs from expected"
         IO.println diff
         return 1
       | .error msg =>
-        IO.println s!"  ✗ {testName}: {msg}"
+        IO.println s!"  ✗ {testFileName}: {msg}"
         return 1
       | .missingExpected =>
-        IO.println s!"  ? {testName}: missing .expected.lean (run minimizer and review, then --accept)"
+        IO.println s!"  ? {testFileName}: missing .expected.lean (run minimizer and review, then --accept)"
+        return 1
+    else if testPathStr.containsSubstr "/CLI/" then
+      -- CLI test
+      let result ← runCLITest testFile
+      match result with
+      | .passed =>
+        IO.println s!"  ✓ {testFileName}"
+        return 0
+      | .failed diff =>
+        IO.println s!"  ✗ {testFileName}: output differs from expected"
+        IO.println diff
+        return 1
+      | .error msg =>
+        IO.println s!"  ✗ {testFileName}: {msg}"
+        return 1
+      | .missingExpected =>
+        IO.println s!"  ? {testFileName}: missing .expected.lean (run and review, then --accept)"
         return 1
     else
       IO.eprintln s!"Unknown test type for: {testFile}"
@@ -522,14 +562,16 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut passed := 0
   let mut failed := 0
   let mut errors := 0
+  let mut failedPaths : Array FilePath := #[]
 
   -- Run CLI tests
   IO.println "Running CLI tests..."
   IO.println ""
 
-  let (cliPassed, cliFailed) ← runCLITests acceptArg
+  let (cliPassed, cliFailed, cliFailedPaths) ← runCLITests acceptArg
   passed := passed + cliPassed
   failed := failed + cliFailed
+  failedPaths := failedPaths ++ cliFailedPaths
 
   -- Run component tests
   IO.println ""
@@ -541,10 +583,11 @@ unsafe def main (args : List String) : IO UInt32 := do
   failed := failed + componentFailed
 
   -- Run golden tests
-  let (goldenPassed, goldenFailed, goldenErrors) ← runGoldenTests acceptArg
+  let (goldenPassed, goldenFailed, goldenErrors, goldenFailedPaths) ← runGoldenTests acceptArg
   passed := passed + goldenPassed
   failed := failed + goldenFailed
   errors := errors + goldenErrors
+  failedPaths := failedPaths ++ goldenFailedPaths
 
   if accept then
     IO.println ""
@@ -558,7 +601,8 @@ unsafe def main (args : List String) : IO UInt32 := do
   if failed > 0 || errors > 0 then
     IO.println ""
     IO.println "To update expected outputs after review:"
-    IO.println "  lake exe test --accept"
+    for path in failedPaths do
+      IO.println s!"  lake exe test --accept {path}"
     return 1
 
   return 0
