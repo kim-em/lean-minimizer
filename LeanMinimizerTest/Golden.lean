@@ -2,9 +2,11 @@
 This module imports all Golden test submodules to ensure they are built.
 These modules are used as test inputs by the minimize tool.
 -/
+import LeanMinimizerTest.Golden.AttributeExpansion.MockToDual
 import LeanMinimizerTest.Golden.BodyReplacementInlined.B
 import LeanMinimizerTest.Golden.BodyReplacementInlined.C
 import LeanMinimizerTest.Golden.ImportInlining.Simple
+import LeanMinimizerTest.Golden.ImportInliningPublicMetaSection.Module
 import LeanMinimizerTest.Golden.ImportInliningPublicSection.Module
 import LeanMinimizerTest.Golden.ImportInliningComplex.A
 import LeanMinimizerTest.Golden.ImportInliningComplex.B
