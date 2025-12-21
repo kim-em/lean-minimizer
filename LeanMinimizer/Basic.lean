@@ -368,10 +368,11 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
 /-- Test if source compiles by running lean in a subprocess.
     This isolates memory usage - when the subprocess exits, all Lean caches are freed. -/
-def testCompilesSubprocess (source : String) (_fileName : String) : IO Bool := do
-  -- Create temp file with timestamp and random component to avoid collisions in parallel tests
-  let rand ← IO.rand 0 999999999
-  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-test-{← IO.monoNanosNow}-{rand}.lean"
+def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
+  -- Use a name based on input file and PID to avoid conflicts in parallel runs
+  let baseName := (System.FilePath.mk fileName).fileName.getD "test"
+  let pid ← IO.Process.getPID
+  let tempFile := System.FilePath.mk s!"/tmp/.lean-minimize-{pid}-{baseName}"
   IO.FS.writeFile tempFile source
 
   -- Get environment variables for lean

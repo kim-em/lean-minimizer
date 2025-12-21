@@ -363,19 +363,18 @@ private partial def findProjectRootImpl (startPath : System.FilePath) : IO (Opti
     | none => return none
     | some parent => findProjectRootImpl parent
 
-/-- Common setup for subprocess execution: create temp file and find project root.
-    Returns (tempFilePath, projectRoot). The caller must clean up the temp file. -/
-private def setupSubprocessExecution (source : String) (fileName : String) :
-    IO (System.FilePath × System.FilePath) := do
-  -- Create temp file in the same directory as the source file to preserve relative imports
-  let fileDir := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
-  let timestamp ← IO.monoNanosNow
-  let rand ← IO.rand 0 999999999
-  let tempSource := fileDir / s!".lean-minimize-source-{timestamp}-{rand}.lean"
+/-- Get the temp file path for subprocess execution.
+    Uses a name derived from the input file and PID, so parallel processes don't conflict.
+    If the process is interrupted, the file remains but next run with same PID overwrites it. -/
+private def getTempSourcePath (fileName : String) : IO System.FilePath := do
+  let fp := System.FilePath.mk fileName
+  let fileDir := fp.parent.getD (System.FilePath.mk ".")
+  let baseName := fp.fileName.getD "temp"
+  let pid ← IO.Process.getPID
+  return fileDir / s!".lean-minimize-{pid}-{baseName}"
 
-  IO.FS.writeFile tempSource source
-
-  -- Find the project root of the file being minimized
+/-- Find the project root for subprocess execution. -/
+private def findProjectRoot (fileName : String) : IO System.FilePath := do
   let absoluteFilePath ← do
     let fp := System.FilePath.mk fileName
     if fp.isAbsolute then pure fp
@@ -383,14 +382,20 @@ private def setupSubprocessExecution (source : String) (fileName : String) :
       let cwd ← IO.currentDir
       pure (cwd / fp)
 
-  let projectRoot ← do
-    match absoluteFilePath.parent with
+  match absoluteFilePath.parent with
+  | none => pure (← IO.currentDir)
+  | some parent =>
+    match ← findProjectRootImpl parent with
+    | some root => pure root
     | none => pure (← IO.currentDir)
-    | some parent =>
-      match ← findProjectRootImpl parent with
-      | some root => pure root
-      | none => pure (← IO.currentDir)
 
+/-- Write source to temp file and find project root for subprocess execution.
+    Returns (tempFilePath, projectRoot). The caller should clean up the temp file. -/
+private def setupSubprocessExecution (source : String) (fileName : String) :
+    IO (System.FilePath × System.FilePath) := do
+  let tempSource ← getTempSourcePath fileName
+  IO.FS.writeFile tempSource source
+  let projectRoot ← findProjectRoot fileName
   return (tempSource, projectRoot)
 
 /-- Run `lean-minimizer --header-info` in a subprocess to parse header without elaboration.
