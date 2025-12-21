@@ -1,3 +1,6 @@
+-- Test for empty namespace removal pass
+-- The empty namespace should be removed
+
 def needed := 1
 
 /-- info: 1 -/

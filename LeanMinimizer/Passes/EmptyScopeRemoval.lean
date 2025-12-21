@@ -82,15 +82,19 @@ def getEndName? (stx : Syntax) : Option Name :=
 
 /-- Reconstruct source from compilation steps using their recorded positions.
 
+    The header (from position 0 to headerEndPos) is always included.
     Only includes gaps between steps that are consecutive in the original ordering
     (i.e., steps where `idx` values differ by exactly 1). This ensures that when
     steps are removed, their content is properly excluded from the reconstruction. -/
-def reconstructSourceFromSteps (source : String) (steps : Array CompilationStep) : String := Id.run do
-  if steps.isEmpty then
-    return ""
+def reconstructSourceFromSteps (source : String) (headerEndPos : String.Pos.Raw)
+    (steps : Array CompilationStep) : String := Id.run do
+  -- Always include the header
+  let mut result := String.Pos.Raw.extract source ⟨0⟩ headerEndPos
 
-  let mut result := ""
-  let mut lastEnd : String.Pos.Raw := 0
+  if steps.isEmpty then
+    return result
+
+  let mut lastEnd : String.Pos.Raw := headerEndPos
   let mut prevIdx : Option Nat := none
 
   for step in steps do
@@ -98,7 +102,7 @@ def reconstructSourceFromSteps (source : String) (steps : Array CompilationStep)
     -- Only add gap if steps are consecutive in original ordering
     -- (i.e., no removed steps between them)
     let shouldAddGap := match prevIdx with
-      | none => step.idx == 0  -- First: only if original first step
+      | none => step.idx == 0  -- First step: only if it was the original first command
       | some p => step.idx == p + 1  -- Otherwise: only if consecutive
     if shouldAddGap && startPos > lastEnd then
       result := result ++ String.Pos.Raw.extract source lastEnd startPos
@@ -187,7 +191,7 @@ unsafe def emptyScopeRemovalPass : Pass where
 
     -- Reconstruct source from remaining steps
     let allNewSteps := newStepsBeforeMarker ++ stepsFromMarker
-    let newSource := reconstructSourceFromSteps ctx.source allNewSteps
+    let newSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos allNewSteps
 
     -- Use .repeat to run again in case there are now newly-adjacent empty scopes
     return { source := newSource, changed := true, action := .repeat }
