@@ -1,10 +1,16 @@
 # Future Pass Ideas
 
+## Remove `public section` Wrappers
+Remove `public section` / `public meta section` / `end` wrapper blocks that exist inside named sections. These visibility modifiers are typically not needed in minimized examples.
+
+## Remove Docstrings
+Strip all doc comments (`/-- ... -/`) from declarations. These add noise to minimized files.
+
+## Remove `_root_` Prefixes
+Remove `_root_` prefixes from declaration names when they're not needed for disambiguation.
+
 ## Type Replacement
 Try replacing `ℝ` with `ℚ`.
-
-## Attribute Expansion
-Replace any surviving `@[simps]`, `@[to_additive]`, and `@[to_dual]` attributes with the definitions they produce. (Ideally by intercepting what they produce, either via `Environment` or `InfoTree`.)
 
 ## Structure Field Removal
 Remove a field from a structure, if all uses of that field below are `sorry` (and remove those uses).
