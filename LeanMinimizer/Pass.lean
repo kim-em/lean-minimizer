@@ -26,8 +26,12 @@ inductive PassAction where
   | restart
   /-- Run this pass again -/
   | repeat
+  /-- Run this pass again, and restart from pass 0 when it eventually makes no changes -/
+  | repeatThenRestart
   /-- Move to next pass -/
   | continue
+  /-- Stop immediately with error -/
+  | fatal
   deriving Repr, BEq, Inhabited
 
 /-- Context provided to each pass -/
@@ -123,6 +127,8 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
   let action := match result.action with
     | "restart" => PassAction.restart
     | "repeat" => PassAction.repeat
+    | "repeatThenRestart" => PassAction.repeatThenRestart
+    | "fatal" => PassAction.fatal
     | _ => PassAction.continue  -- Default to continue for unknown values
   { source := result.source, changed := result.changed, action }
 
@@ -141,6 +147,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut passIdx : Nat := 0
   let maxIterations := 1000  -- Safety limit
   let mut iterations := 0
+  let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
 
   -- Write initial source to output file if specified
   if let some outPath := outputFile then
@@ -183,9 +190,16 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       pass.run ctx
 
     if !result.changed then
-      if verbose then
-        IO.eprintln s!"  No changes, moving to next pass"
-      passIdx := passIdx + 1
+      -- If we were in a repeatThenRestart cycle, restart now
+      if pendingRestart then
+        if verbose then
+          IO.eprintln s!"  No more changes, restarting from first pass"
+        pendingRestart := false
+        passIdx := 0
+      else
+        if verbose then
+          IO.eprintln s!"  No changes, moving to next pass"
+        passIdx := passIdx + 1
       continue
 
     -- Verify source actually changed when pass claims it did
@@ -204,15 +218,26 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     | .restart =>
       if verbose then
         IO.eprintln s!"  Changes made, restarting from first pass"
+      pendingRestart := false
       passIdx := 0
     | .repeat =>
       if verbose then
         IO.eprintln s!"  Changes made, repeating pass"
       -- passIdx stays the same
+    | .repeatThenRestart =>
+      if verbose then
+        IO.eprintln s!"  Changes made, repeating pass (will restart when done)"
+      pendingRestart := true
+      -- passIdx stays the same
     | .continue =>
       if verbose then
         IO.eprintln s!"  Changes made, moving to next pass"
       passIdx := passIdx + 1
+    | .fatal =>
+      -- Write current source to output for debugging, then exit
+      if let some outPath := outputFile then
+        IO.FS.writeFile outPath source
+      throw <| IO.userError "Minimization aborted due to fatal error (see above)"
 
   if iterations >= maxIterations then
     IO.eprintln s!"Warning: reached maximum iterations ({maxIterations})"

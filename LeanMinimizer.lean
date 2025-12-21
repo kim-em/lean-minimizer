@@ -12,3 +12,4 @@ import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ExtendsSimplification
 import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining
+import LeanMinimizer.Passes.AttributeExpansion

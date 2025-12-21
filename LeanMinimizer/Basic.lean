@@ -73,6 +73,18 @@ Options:
   --no-extends
     Disable the extends clause simplification pass.
 
+  --only-<PASS>
+    Run only the specified pass once. Available passes:
+      --only-module-removal    Module system removal
+      --only-delete            Command deletion
+      --only-empty-scope       Empty scope removal
+      --only-sorry             Body replacement (sorry)
+      --only-text-subst        Text substitution
+      --only-extends           Extends simplification
+      --only-attr-expansion    Attribute expansion
+      --only-import-minimization  Import minimization
+      --only-import-inlining   Import inlining
+
   --help
     Show this help message.
 
@@ -117,6 +129,8 @@ structure Args where
   noTextSubst : Bool := false
   /-- Disable the extends clause simplification pass -/
   noExtendsSimplification : Bool := false
+  /-- Run only a specific pass (by CLI flag name) -/
+  onlyPass : Option String := none
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -146,6 +160,15 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
     | "--no-text-subst" :: rest => go rest { acc with noTextSubst := true }
     | "--no-extends" :: rest => go rest { acc with noExtendsSimplification := true }
+    | "--only-delete" :: rest => go rest { acc with onlyPass := some "delete" }
+    | "--only-module-removal" :: rest => go rest { acc with onlyPass := some "module-removal" }
+    | "--only-sorry" :: rest => go rest { acc with onlyPass := some "body-replacement" }
+    | "--only-import-minimization" :: rest => go rest { acc with onlyPass := some "import-minimization" }
+    | "--only-import-inlining" :: rest => go rest { acc with onlyPass := some "import-inlining" }
+    | "--only-text-subst" :: rest => go rest { acc with onlyPass := some "text-subst" }
+    | "--only-extends" :: rest => go rest { acc with onlyPass := some "extends" }
+    | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
+    | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
@@ -397,6 +420,40 @@ def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
   IO.FS.removeFile tempFile
 
   return result.exitCode == 0
+
+/-- Check if source compiles using subprocess, returning error output if it fails -/
+def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (Bool × String) := do
+  -- Use a name based on input file and PID to avoid conflicts in parallel runs
+  let baseName := (System.FilePath.mk fileName).fileName.getD "test"
+  let pid ← IO.Process.getPID
+  let tempFile := System.FilePath.mk s!"/tmp/.lean-minimize-{pid}-{baseName}"
+  IO.FS.writeFile tempFile source
+
+  -- Get environment variables for lean
+  let leanPath ← IO.getEnv "LEAN_PATH"
+  let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
+  let path ← IO.getEnv "PATH"
+
+  let env : Array (String × Option String) := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", leanSysroot),
+    ("PATH", path)
+  ]
+
+  -- Run lean to check compilation
+  let result ← IO.Process.output {
+    cmd := "lean"
+    args := #[tempFile.toString]
+    env := env
+  }
+
+  -- Clean up temp file
+  IO.FS.removeFile tempFile
+
+  let success := result.exitCode == 0
+  -- lean prints errors to stdout, so capture both
+  let errorOutput := if success then "" else (result.stdout ++ result.stderr)
+  return (success, errorOutput)
 
 /-- Check if reconstructed source compiles (using subprocess for memory isolation) -/
 def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do

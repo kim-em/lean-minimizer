@@ -9,6 +9,7 @@ import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ExtendsSimplification
 import LeanMinimizer.Passes.ImportMinimization
 import LeanMinimizer.Passes.ImportInlining
+import LeanMinimizer.Passes.AttributeExpansion
 
 open Lean LeanMinimizer
 
@@ -41,6 +42,7 @@ unsafe def handleAnalyze (file : String) : IO UInt32 := do
 unsafe def subprocessPassRegistry : Array (String × Pass) := #[
   ("body-replacement", bodyReplacementPass),
   ("extends", extendsSimplificationPass),
+  ("attr-expansion", attributeExpansionPass),
   ("import-minimization", importMinimizationPass)
 ]
 
@@ -79,7 +81,9 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
   let actionStr := match passResult.action with
     | .restart => "restart"
     | .repeat => "repeat"
+    | .repeatThenRestart => "repeatThenRestart"
     | .continue => "continue"
+    | .fatal => "fatal"
   let jsonResult : SubprocessPassResult := {
     source := passResult.source
     changed := passResult.changed
@@ -108,18 +112,39 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     return 1
   | some (_, pass) => runPassInner pass file marker verbose
 
+/-- All available passes with their CLI flag names -/
+unsafe def allPasses : Array (String × Pass) := #[
+  ("module-removal", moduleRemovalPass),
+  ("delete", deletionPass),
+  ("empty-scope", emptyScopeRemovalPass),
+  ("body-replacement", bodyReplacementPass),
+  ("text-subst", textSubstitutionPass),
+  ("extends", extendsSimplificationPass),
+  ("attr-expansion", attributeExpansionPass),
+  ("import-minimization", importMinimizationPass),
+  ("import-inlining", importInliningPass)
+]
+
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Extends Simplification → Import Minimization → Import Inlining -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining -/
 unsafe def buildPassList (args : Args) : Array Pass :=
-  #[]
-  |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
-  |> (if args.noDelete then id else (·.push deletionPass))
-  |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
-  |> (if args.noSorry then id else (·.push bodyReplacementPass))
-  |> (if args.noTextSubst then id else (·.push textSubstitutionPass))
-  |> (if args.noExtendsSimplification then id else (·.push extendsSimplificationPass))
-  |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
-  |> (if args.noImportInlining then id else (·.push importInliningPass))
+  -- If --only-X is specified, run only that pass
+  if let some passName := args.onlyPass then
+    match allPasses.find? (·.1 == passName) with
+    | some (_, pass) => #[pass]
+    | none => #[]  -- Unknown pass name (shouldn't happen with proper arg parsing)
+  else
+    -- Normal mode: build pass list based on --no-X flags
+    #[]
+    |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
+    |> (if args.noDelete then id else (·.push deletionPass))
+    |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
+    |> (if args.noSorry then id else (·.push bodyReplacementPass))
+    |> (if args.noTextSubst then id else (·.push textSubstitutionPass))
+    |> (if args.noExtendsSimplification then id else (·.push extendsSimplificationPass))
+    |> (·.push attributeExpansionPass)  -- Always run attribute expansion
+    |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
+    |> (if args.noImportInlining then id else (·.push importInliningPass))
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do

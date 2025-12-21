@@ -25,10 +25,10 @@ open Lean
     E.g., for "namespace Foo", returns `Foo`. -/
 def parseNameFromRepr (keyword : String) (repr : String) : Option Name := do
   -- Find the keyword in the reprinted string
-  let repr := repr.trim
+  let repr := repr.trimAscii.toString
   if !repr.startsWith keyword then failure
   -- Get the rest after the keyword
-  let rest := (repr.drop keyword.length).trim
+  let rest := (repr.drop keyword.length).trimAscii.toString
   if rest.isEmpty then
     return Name.anonymous
   -- The name is the first word after the keyword

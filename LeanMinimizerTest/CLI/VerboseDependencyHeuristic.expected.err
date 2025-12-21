@@ -76,11 +76,15 @@
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 5] Running: Import Minimization
+[Pass 5] Running: Attribute Expansion
+  Looking for generative attributes...
+  No generative attributes found
+  No changes, moving to next pass
+[Pass 6] Running: Import Minimization
   No imports to minimize
   No imports could be removed or replaced
   No changes, moving to next pass
-[Pass 6] Running: Import Inlining
+[Pass 7] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean
