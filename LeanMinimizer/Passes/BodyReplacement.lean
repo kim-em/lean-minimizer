@@ -125,7 +125,8 @@ def replaceWithSorry (source : String) (startPos endPos : String.Pos.Raw) : Stri
     2. If that fails, try replacing Prop-valued subexpressions with `sorry`
     3. If that fails and it's a where-structure, try replacing field values with `sorry`
 
-    Returns `.restart` on any success to allow other passes to run. -/
+    Returns `.repeatThenRestart` on success to continue replacing bodies until
+    exhausted, then restart from pass 0 to allow other passes to run. -/
 def bodyReplacementPass : Pass where
   name := "Body Replacement"
   cliFlag := "body-replacement"
@@ -156,7 +157,7 @@ def bodyReplacementPass : Pass where
       if ← testCompilesSubprocess newSource ctx.fileName then
         if ctx.verbose then
           IO.eprintln s!"    Success: replaced entire body with sorry"
-        return { source := newSource, changed := true, action := .restart }
+        return { source := newSource, changed := true, action := .repeatThenRestart }
 
       -- Phase 2: Try replacing Prop-valued subexpressions with sorry
       -- These are subexpressions whose type is Prop (proofs)
@@ -180,7 +181,7 @@ def bodyReplacementPass : Pass where
         if ← testCompilesSubprocess newSource ctx.fileName then
           if ctx.verbose then
             IO.eprintln s!"    Success: replaced Prop subexpression with sorry"
-          return { source := newSource, changed := true, action := .restart }
+          return { source := newSource, changed := true, action := .repeatThenRestart }
 
       -- Phase 3: For where-structures, try replacing individual field values
       let inner := getInnerDecl? step.stx
@@ -198,7 +199,7 @@ def bodyReplacementPass : Pass where
             if ← testCompilesSubprocess newSource ctx.fileName then
               if ctx.verbose then
                 IO.eprintln s!"    Success: replaced where-structure field with sorry"
-              return { source := newSource, changed := true, action := .restart }
+              return { source := newSource, changed := true, action := .repeatThenRestart }
 
     -- No changes possible
     if ctx.verbose then

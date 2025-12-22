@@ -268,7 +268,8 @@ def tryCompileWithSorryFieldRemoval (source : String) (fileName : String) (verbo
     1. Try removing the parent entirely
     2. If that fails, try replacing with grandparents (the parent's own parents)
 
-    Returns `.repeat` on success to allow further simplification. -/
+    Returns `.repeatThenRestart` on success to continue simplifying extends clauses
+    until exhausted, then restart from pass 0 to allow other passes to run. -/
 def extendsSimplificationPass : Pass where
   name := "Extends Simplification"
   cliFlag := "extends"
@@ -313,8 +314,8 @@ def extendsSimplificationPass : Pass where
         if success then
           if ctx.verbose then
             IO.eprintln s!"        Removed parent {parent.name}"
-          -- Restart to allow Deletion pass to remove newly-unused structures
-          return { source := finalSource, changed := true, action := .restart }
+          -- Repeat to simplify more extends, then restart for Deletion pass
+          return { source := finalSource, changed := true, action := .repeatThenRestart }
 
         -- Try 2: Replace with grandparents
         -- Note: grandparents are just names from the environment, so we create
@@ -340,8 +341,8 @@ def extendsSimplificationPass : Pass where
           if success then
             if ctx.verbose then
               IO.eprintln s!"        Replaced {parent.name} with its parents"
-            -- Restart to allow Deletion pass to remove newly-unused structures
-            return { source := finalSource, changed := true, action := .restart }
+            -- Repeat to simplify more extends, then restart for Deletion pass
+            return { source := finalSource, changed := true, action := .repeatThenRestart }
 
     -- No changes possible
     if ctx.verbose then
