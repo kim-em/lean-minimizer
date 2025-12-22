@@ -4,6 +4,8 @@ import LeanMinimizer.Subprocess
 import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
+import LeanMinimizer.Passes.SingletonNamespaceFlattening
+import LeanMinimizer.Passes.PublicSectionRemoval
 import LeanMinimizer.Passes.BodyReplacement
 import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ExtendsSimplification
@@ -117,6 +119,8 @@ unsafe def allPasses : Array (String × Pass) := #[
   ("module-removal", moduleRemovalPass),
   ("delete", deletionPass),
   ("empty-scope", emptyScopeRemovalPass),
+  ("singleton-ns", singletonNamespaceFlatteningPass),
+  ("public-section", publicSectionRemovalPass),
   ("body-replacement", bodyReplacementPass),
   ("text-subst", textSubstitutionPass),
   ("extends", extendsSimplificationPass),
@@ -126,7 +130,7 @@ unsafe def allPasses : Array (String × Pass) := #[
 ]
 
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Deletion → Empty Scope Removal → Body Replacement → Text Substitution → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Singleton Namespace Flattening → Public Section Removal → Body Replacement → Text Substitution → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   -- If --only-X is specified, run only that pass
   if let some passName := args.onlyPass then
@@ -139,6 +143,8 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
     |> (if args.noDelete then id else (·.push deletionPass))
     |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
+    |> (if args.noDelete then id else (·.push singletonNamespaceFlatteningPass))  -- Only run if deletion is enabled
+    |> (·.push publicSectionRemovalPass)  -- Always run public section removal
     |> (if args.noSorry then id else (·.push bodyReplacementPass))
     |> (if args.noTextSubst then id else (·.push textSubstitutionPass))
     |> (if args.noExtendsSimplification then id else (·.push extendsSimplificationPass))

@@ -1,7 +1,9 @@
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
-[Pass 1] Running: Body Replacement
+[Pass 1] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 2] Running: Body Replacement
   Processing 10 commands for body replacement...
     Trying declaration at index 9...
     Trying declaration at index 8...
@@ -15,7 +17,7 @@
     Trying declaration at index 0...
   No body replacements possible
   No changes, moving to next pass
-[Pass 2] Running: Text Substitution
+[Pass 3] Running: Text Substitution
   Running text substitution mini-passes...
     Comment removal: found 4 potential replacements
       Applied all 4 replacements at once
@@ -24,7 +26,9 @@
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
-[Pass 1] Running: Body Replacement
+[Pass 1] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 2] Running: Body Replacement
   Processing 10 commands for body replacement...
     Trying declaration at index 9...
     Trying declaration at index 8...
@@ -38,23 +42,23 @@
     Trying declaration at index 0...
   No body replacements possible
   No changes, moving to next pass
-[Pass 2] Running: Text Substitution
+[Pass 3] Running: Text Substitution
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 3] Running: Extends Simplification
+[Pass 4] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 4] Running: Attribute Expansion
+[Pass 5] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 5] Running: Import Minimization
+[Pass 6] Running: Import Minimization
   No imports to minimize
   No imports could be removed or replaced
   No changes, moving to next pass
-[Pass 6] Running: Import Inlining
+[Pass 7] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

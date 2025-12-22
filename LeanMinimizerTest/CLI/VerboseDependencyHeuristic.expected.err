@@ -68,7 +68,9 @@
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Text Substitution
+[Pass 3] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 4] Running: Text Substitution
   Running text substitution mini-passes...
     Comment removal: found 1 potential replacements
       Applied all 1 replacements at once
@@ -110,23 +112,25 @@
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Text Substitution
+[Pass 3] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 4] Running: Text Substitution
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 4] Running: Extends Simplification
+[Pass 5] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 5] Running: Attribute Expansion
+[Pass 6] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 6] Running: Import Minimization
+[Pass 7] Running: Import Minimization
   No imports to minimize
   No imports could be removed or replaced
   No changes, moving to next pass
-[Pass 7] Running: Import Inlining
+[Pass 8] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

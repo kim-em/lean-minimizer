@@ -7,6 +7,8 @@ import LeanMinimizer.Pass
 import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
+import LeanMinimizer.Passes.SingletonNamespaceFlattening
+import LeanMinimizer.Passes.PublicSectionRemoval
 import LeanMinimizer.Passes.BodyReplacement
 import LeanMinimizer.Passes.TextSubstitution
 import LeanMinimizer.Passes.ExtendsSimplification
