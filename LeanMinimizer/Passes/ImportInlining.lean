@@ -166,11 +166,11 @@ def stripAttributesAndModifiers (line : String) : String := Id.run do
     else
       break -- Malformed attribute, stop stripping
 
-  -- Strip modifiers (can appear in sequence): public, private, protected, scoped, meta
+  -- Strip modifiers (can appear in sequence): visibility, scoped, noncomputable, partial, unsafe, meta
   let mut changed := true
   while changed do
     changed := false
-    for modifier in ["public ", "private ", "protected ", "scoped ", "meta "] do
+    for modifier in ["public ", "private ", "protected ", "scoped ", "noncomputable ", "partial ", "unsafe ", "meta "] do
       if s.startsWith modifier then
         s := (s.drop modifier.length).trimAsciiStart.toString
         changed := true
