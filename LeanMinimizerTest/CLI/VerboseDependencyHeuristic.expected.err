@@ -132,7 +132,6 @@
   No changes, moving to next pass
 [Pass 8] Running: Import Minimization
   No imports to minimize
-  No imports could be removed or replaced
   No changes, moving to next pass
 [Pass 9] Running: Import Inlining
   No imports to inline

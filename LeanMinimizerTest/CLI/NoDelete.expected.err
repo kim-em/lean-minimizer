@@ -56,7 +56,6 @@
   No changes, moving to next pass
 [Pass 6] Running: Import Minimization
   No imports to minimize
-  No imports could be removed or replaced
   No changes, moving to next pass
 [Pass 7] Running: Import Inlining
   No imports to inline

@@ -158,10 +158,126 @@ def getModuleImports (env : Environment) (modName : Name) : Option (Array Import
   let moduleData ← env.header.moduleData[idx]?
   return moduleData.imports
 
+/-! ## Delta debugging for imports -/
+
+/-- State for import minimization with ddmin -/
+structure ImportMinState where
+  /-- Whether file uses module system -/
+  usesModule : Bool
+  /-- Whether file has prelude -/
+  hasPrelude : Bool
+  /-- Whether to strip modifiers from imports -/
+  stripModifiers : Bool
+  /-- The command portion of the source (after header) -/
+  commandsPart : String
+  /-- Full list of current imports -/
+  allImports : Array ImportInfo
+  /-- Imports that must be kept (already tried and failed to delete) -/
+  required : Std.HashSet Name
+  /-- File name for testing -/
+  fileName : String
+  /-- Whether to print verbose output -/
+  verbose : Bool
+
+/-- Test if keeping only the given indices (plus required imports) compiles -/
+def testImportsCompile (state : ImportMinState) (keepIndices : Array Nat) : IO Bool := do
+  -- Get the imports to keep: required ones plus the ones in keepIndices
+  let mut keptImports : Array ImportInfo := #[]
+  for i in [:state.allImports.size] do
+    let imp := state.allImports[i]!
+    if state.required.contains imp.moduleName || keepIndices.contains i then
+      keptImports := keptImports.push imp
+  let header := reconstructHeader state.usesModule state.hasPrelude keptImports state.stripModifiers
+  let source := header ++ state.commandsPart
+  testCompilesSubprocess source state.fileName
+
+/-- Delta debugging core for imports. End-biased: tries removing later imports first.
+    Returns indices (into the candidates array) that must be kept. -/
+partial def ddminImportsCore (state : ImportMinState)
+    (candidates : Array Nat) (currentlyKept : Array Nat) : IO (Array Nat) := do
+  -- Base case: no candidates to try removing
+  if candidates.size == 0 then
+    return currentlyKept
+
+  if candidates.size == 1 then
+    -- Try removing this single import
+    let idx := candidates[0]!
+    let withoutThis := currentlyKept.filter (· != idx)
+    if state.verbose then
+      let imp := state.allImports[idx]!
+      IO.eprintln s!"    ddmin: try remove [{imp.moduleName}]"
+    if ← testImportsCompile state withoutThis then
+      if state.verbose then
+        IO.eprintln s!"      → Success"
+      return withoutThis
+    if state.verbose then
+      IO.eprintln s!"      → Failed: must keep"
+    return currentlyKept
+
+  -- Binary split
+  let n := candidates.size / 2
+  let firstHalf := candidates[:n].toArray
+  let secondHalf := candidates[n:].toArray
+
+  -- End-biased: try removing second half (later imports) first
+  let withoutSecond := currentlyKept.filter (!secondHalf.contains ·)
+  if state.verbose then
+    IO.eprintln s!"    ddmin: try remove {secondHalf.size} imports (keep {firstHalf.size})"
+  if ← testImportsCompile state withoutSecond then
+    if state.verbose then
+      IO.eprintln s!"      → Success, recursing on first half"
+    return ← ddminImportsCore state firstHalf withoutSecond
+
+  -- Try removing first half
+  let withoutFirst := currentlyKept.filter (!firstHalf.contains ·)
+  if state.verbose then
+    IO.eprintln s!"      → Failed, try remove {firstHalf.size} imports (keep {secondHalf.size})"
+  if ← testImportsCompile state withoutFirst then
+    if state.verbose then
+      IO.eprintln s!"      → Success, recursing on second half"
+    return ← ddminImportsCore state secondHalf withoutFirst
+
+  -- Both halves needed; recurse on each
+  if state.verbose then
+    IO.eprintln s!"      → Failed: both halves needed, recursing on each"
+  let afterSecond ← ddminImportsCore state secondHalf currentlyKept
+  let afterFirst ← ddminImportsCore state firstHalf afterSecond
+  return afterFirst
+
+/-- Delta debugging entry point for imports.
+    Takes indices of untried imports, returns indices that must be kept. -/
+def ddminImports (state : ImportMinState) (candidates : Array Nat) : IO (Array Nat) := do
+  ddminImportsCore state candidates candidates
+
+/-- Greedy deletion: try removing each untried import one at a time.
+    Returns the imports that couldn't be removed (should be added to required). -/
+def greedyDeleteImports (state : ImportMinState) (untried : Array Nat) : IO (Array Nat) := do
+  let mut mustKeep : Array Nat := #[]
+  let mut currentKept := untried
+  for idx in untried do
+    let withoutThis := currentKept.filter (· != idx)
+    if state.verbose then
+      let imp := state.allImports[idx]!
+      IO.eprintln s!"    Trying to remove {imp.moduleName}..."
+    if ← testImportsCompile { state with } withoutThis then
+      if state.verbose then
+        IO.eprintln s!"      → Removed"
+      currentKept := withoutThis
+    else
+      if state.verbose then
+        IO.eprintln s!"      → Must keep"
+      mustKeep := mustKeep.push idx
+  return mustKeep
+
 /-- The import minimization pass.
 
-    Iteratively tries to remove or inline imports until no more changes can be made.
-    Tracks which imports have been tried within this pass run to avoid redundant work. -/
+    Uses a two-phase approach in each iteration:
+    1. Deletion sub-pass: Try to remove imports (using ddmin if >20 untried imports)
+    2. Replacement sub-pass: Try to replace imports with their transitive imports
+
+    Tracks `required` (imports we've tried and failed to delete) and `failedReplace`
+    (imports we've tried and failed to replace). When replacement introduces new imports,
+    they become candidates for deletion in the next iteration. -/
 unsafe def importMinimizationPass : Pass where
   name := "Import Minimization"
   cliFlag := "import-minimization"
@@ -170,11 +286,7 @@ unsafe def importMinimizationPass : Pass where
     -- Use subprocess-provided flags when available, otherwise check syntax
     let usesModule := ctx.hasModule || headerUsesModuleSystem ctx.header
     let hasPrelude := ctx.hasPrelude || headerHasPrelude ctx.header
-
-    -- Track imports we've already tried and failed to remove/replace
-    let mut triedAndFailed : Std.HashSet Name := {}
-    let mut currentSource := ctx.source
-    let mut anyChanges := false
+    let stripModifiers := !usesModule
 
     -- Get initial environment for looking up transitive imports
     let env ← match ctx.steps[0]? with
@@ -187,62 +299,97 @@ unsafe def importMinimizationPass : Pass where
       let (env, _msgs) ← processHeader header {} messages inputCtx
       pure env
 
-    -- Whether to strip modifiers when generating imports
-    let stripModifiers := !usesModule
+    -- Parse initial imports
+    let inputCtx := Parser.mkInputContext ctx.source ctx.fileName
+    let (header, parserState, _) ← Parser.parseHeader inputCtx
+    let initialImports := extractImports header
+    let commandsPart := String.Pos.Raw.extract ctx.source parserState.pos ctx.source.rawEndPos
+
+    if initialImports.isEmpty then
+      if ctx.verbose then
+        IO.eprintln "  No imports to minimize"
+      return { source := ctx.source, changed := false, action := .continue }
+
+    -- Track state across iterations
+    let mut required : Std.HashSet Name := {}       -- tried and failed to delete
+    let mut failedReplace : Std.HashSet Name := {}  -- tried and failed to replace
+    let mut currentImports := initialImports
+    let mut anyChanges := false
 
     -- Loop until no more changes can be made
     let maxIterations := 1000
     for _ in [:maxIterations] do
-      -- Re-parse header to get current imports
-      let inputCtx := Parser.mkInputContext currentSource ctx.fileName
-      let (header, parserState, _) ← Parser.parseHeader inputCtx
-      let imports := extractImports header
-      let headerEndPos := parserState.pos
-      let commandsPart := String.Pos.Raw.extract currentSource headerEndPos currentSource.rawEndPos
-
-      if imports.isEmpty then
-        if ctx.verbose && !anyChanges then
-          IO.eprintln "  No imports to minimize"
-        break
-
-      if ctx.verbose then
-        IO.eprintln s!"  Analyzing {imports.size} imports ({triedAndFailed.size} already tried)..."
-
-      -- Find an import we haven't tried yet
       let mut madeProgress := false
-      for imp in imports do
-        if triedAndFailed.contains imp.moduleName then
-          continue
 
+      -- === Deletion sub-pass ===
+      -- Find indices of untried imports (not in required set)
+      let mut untried : Array Nat := #[]
+      for i in [:currentImports.size] do
+        if !required.contains currentImports[i]!.moduleName then
+          untried := untried.push i
+
+      if !untried.isEmpty then
         if ctx.verbose then
-          IO.eprintln s!"  Trying to remove import {imp.moduleName}..."
+          IO.eprintln s!"  Deletion sub-pass: {untried.size} untried of {currentImports.size} imports"
 
-        -- Try 1: Remove this import entirely
-        let remainingImports := imports.filter fun x => x != imp
-        let newHeader := reconstructHeader usesModule hasPrelude remainingImports stripModifiers
-        let newSource := newHeader ++ commandsPart
+        let state : ImportMinState := {
+          usesModule, hasPrelude, stripModifiers, commandsPart
+          allImports := currentImports
+          required
+          fileName := ctx.fileName
+          verbose := ctx.verbose
+        }
 
-        if ← testCompilesSubprocess newSource ctx.fileName then
+        -- Use ddmin for large sets, greedy for small
+        let ddminThreshold := 20
+        let keptIndices ← if untried.size > ddminThreshold then
           if ctx.verbose then
-            IO.eprintln s!"    Removed import {imp.moduleName}"
-          currentSource := newSource
-          if let some outPath := ctx.outputFile then
-            IO.FS.writeFile outPath currentSource
+            IO.eprintln s!"    Using delta debugging ({untried.size} > {ddminThreshold})"
+          ddminImports state untried
+        else
+          if ctx.verbose then
+            IO.eprintln s!"    Using greedy deletion"
+          greedyDeleteImports state untried
+
+        -- Update required with imports that couldn't be deleted
+        for idx in keptIndices do
+          required := required.insert currentImports[idx]!.moduleName
+
+        -- Check if any imports were removed
+        let deletedCount := untried.size - keptIndices.size
+        if deletedCount > 0 then
+          if ctx.verbose then
+            IO.eprintln s!"    Removed {deletedCount} imports"
+          -- Rebuild currentImports: keep required + keptIndices
+          let mut newImports : Array ImportInfo := #[]
+          for i in [:currentImports.size] do
+            let imp := currentImports[i]!
+            if required.contains imp.moduleName || keptIndices.contains i then
+              newImports := newImports.push imp
+          currentImports := newImports
           anyChanges := true
           madeProgress := true
-          break
+          -- Write progress
+          if let some outPath := ctx.outputFile then
+            let newHeader := reconstructHeader usesModule hasPrelude currentImports stripModifiers
+            IO.FS.writeFile outPath (newHeader ++ commandsPart)
 
-        -- Try 2: Replace with its own imports
+      -- === Replacement sub-pass ===
+      -- Try to replace each import with its transitive imports
+      for imp in currentImports do
+        if failedReplace.contains imp.moduleName then
+          continue
+
         if let some transitiveImports := getModuleImports env imp.moduleName then
           if !transitiveImports.isEmpty then
             if ctx.verbose then
-              IO.eprintln s!"  Trying to replace import {imp.moduleName} with its {transitiveImports.size} imports..."
+              IO.eprintln s!"  Trying to replace {imp.moduleName} with its {transitiveImports.size} imports..."
 
             -- Build new import list: remove current, add transitive (avoiding duplicates)
-            let mut newImports := imports.filter fun x => x != imp
+            let mut newImports := currentImports.filter fun x => x.moduleName != imp.moduleName
             for transImp in transitiveImports do
               let transInfo := leanImportToInfo transImp
-              -- Skip Init - it's always implicitly available and causes infinite loops
+              -- Skip Init - it's always implicitly available
               if transInfo.moduleName == `Init then
                 continue
               let alreadyPresent := newImports.any fun existing =>
@@ -250,29 +397,36 @@ unsafe def importMinimizationPass : Pass where
               if !alreadyPresent then
                 newImports := newImports.push transInfo
 
+            -- Test if replacement works
             let newHeader := reconstructHeader usesModule hasPrelude newImports stripModifiers
             let newSource := newHeader ++ commandsPart
 
             if ← testCompilesSubprocess newSource ctx.fileName then
               if ctx.verbose then
-                IO.eprintln s!"    Replaced import {imp.moduleName} with its imports"
-              currentSource := newSource
-              if let some outPath := ctx.outputFile then
-                IO.FS.writeFile outPath currentSource
+                IO.eprintln s!"    Replaced {imp.moduleName} with its imports"
+              -- New imports are NOT in required, so they'll be tried for deletion
+              -- Remove the replaced import from required if it was there
+              required := required.erase imp.moduleName
+              currentImports := newImports
               anyChanges := true
               madeProgress := true
+              -- Write progress
+              if let some outPath := ctx.outputFile then
+                IO.FS.writeFile outPath newSource
               break
+            else
+              failedReplace := failedReplace.insert imp.moduleName
+        else
+          failedReplace := failedReplace.insert imp.moduleName
 
-        -- Mark this import as tried and failed
-        triedAndFailed := triedAndFailed.insert imp.moduleName
-
-      -- If no progress was made, we're done
+      -- If no progress was made in either sub-pass, we're done
       if !madeProgress then
         break
 
     if ctx.verbose && !anyChanges then
       IO.eprintln "  No imports could be removed or replaced"
 
-    return { source := currentSource, changed := anyChanges, action := .continue }
+    let finalHeader := reconstructHeader usesModule hasPrelude currentImports stripModifiers
+    return { source := finalHeader ++ commandsPart, changed := anyChanges, action := .continue }
 
 end LeanMinimizer
