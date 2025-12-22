@@ -48,40 +48,60 @@ def getStructureName? (structStx : Syntax) : Option Name := do
 
 /-- Information about a parent in an extends clause -/
 structure ParentInfo where
-  /-- The parent name as it appears in source -/
+  /-- The parent name (used for identification) -/
   name : Name
+  /-- The full source text of this parent (e.g., "Module R L") -/
+  sourceText : String
   /-- Start position in source -/
   startPos : String.Pos.Raw
   /-- End position in source -/
   endPos : String.Pos.Raw
   deriving Repr, Inhabited
 
+/-- Recursively search for an extends clause in syntax tree -/
+partial def findExtendsInSyntax (stx : Syntax) : Option Syntax :=
+  if stx.isOfKind `Lean.Parser.Command.«extends» then
+    some stx
+  else
+    -- Search through children
+    let rec loop (i : Nat) : Option Syntax :=
+      if i >= stx.getNumArgs then none
+      else if let some result := findExtendsInSyntax (stx.getArg i) then result
+      else loop (i + 1)
+    loop 0
+
 /-- Find the extends clause syntax in a structure.
     Returns the extends clause syntax node if present.
 
-    Structure syntax has extends clause wrapper at arg 3, containing the actual extends syntax. -/
-def findExtendsClause? (structStx : Syntax) : Option Syntax := do
-  -- Structure syntax: structureTk declId optDeclSig (extends)? (where fields)? optDeriving
-  -- The extends clause is wrapped in arg 3
-  if structStx.getNumArgs <= 3 then failure
-  let extendsWrapper := structStx.getArg 3
-  if extendsWrapper.isNone || extendsWrapper.getNumArgs == 0 then failure
-  let extendsStx := extendsWrapper.getArg 0
-  if extendsStx.isOfKind `Lean.Parser.Command.«extends» then
-    return extendsStx
-  failure
+    The extends clause can be in different positions depending on whether the
+    structure has type parameters:
+    - Without params: `structure B extends A` has extends at arg 3
+    - With params: `structure B (R : Type) extends A R` has extends inside arg 2
+      (the ppIndent wrapper containing optDeclSig and optional extends) -/
+def findExtendsClause? (structStx : Syntax) : Option Syntax :=
+  findExtendsInSyntax structStx
+
+/-- Find the first ident in a syntax tree -/
+partial def findFirstIdent (stx : Syntax) : Option Name :=
+  if stx.isIdent then
+    some stx.getId
+  else
+    let rec loop (i : Nat) : Option Name :=
+      if i >= stx.getNumArgs then none
+      else if let some result := findFirstIdent (stx.getArg i) then result
+      else loop (i + 1)
+    loop 0
 
 /-- Extract parent info from extends clause syntax.
 
     Extends syntax structure:
     - Arg 0: "extends" keyword
     - Arg 1: null wrapper containing structParent nodes (comma-separated)
-    - Arg 2: null (trailing)
 
-    Each structParent has:
-    - Arg 0: null (modifiers?)
-    - Arg 1: ident (the parent name) -/
-def extractParentsFromExtends (extendsStx : Syntax) : Array ParentInfo := Id.run do
+    Each structParent contains the parent type, which may be:
+    - A simple ident (e.g., `A`)
+    - A type application (e.g., `A R` or `Module R L`) -/
+def extractParentsFromExtends (extendsStx : Syntax) (source : String) : Array ParentInfo := Id.run do
   let mut result := #[]
   -- Get the wrapper containing parents (arg 1)
   if extendsStx.getNumArgs < 2 then return #[]
@@ -93,14 +113,14 @@ def extractParentsFromExtends (extendsStx : Syntax) : Array ParentInfo := Id.run
     if item.isAtom then continue
     -- Check if it's a structParent
     if item.isOfKind `Lean.Parser.Command.structParent then
-      -- structParent has: modifiers? ident
-      -- The ident is typically at arg 1
-      if item.getNumArgs >= 2 then
-        let identArg := item.getArg 1
-        if identArg.isIdent then
-          if let some startPos := item.getPos? then
-            if let some endPos := item.getTailPos? then
-              result := result.push { name := identArg.getId, startPos, endPos }
+      -- structParent contains the parent type expression
+      -- Find the first ident in the type - that's the parent name
+      if let some name := findFirstIdent item then
+        if let some startPos := item.getPos? then
+          if let some endPos := item.getTailPos? then
+            -- Extract the source text for this parent
+            let sourceText := String.Pos.Raw.extract source startPos endPos
+            result := result.push { name, sourceText, startPos, endPos }
   return result
 
 /-- Get the source range of the entire extends clause (including "extends" keyword) -/
@@ -119,18 +139,19 @@ def getStructureParents (env : Environment) (structName : Name) : Array Name := 
 
 /-! ## Source manipulation -/
 
-/-- Render a list of parent names as an extends clause.
-    Returns empty string if no parents. -/
-def renderExtendsClause (parents : Array Name) : String :=
+/-- Render a list of parents as an extends clause.
+    Returns empty string if no parents.
+    Uses the full sourceText from each parent to preserve type arguments. -/
+def renderExtendsClause (parents : Array ParentInfo) : String :=
   if parents.isEmpty then
     ""
   else
-    " extends " ++ ", ".intercalate (parents.map toString).toList
+    " extends " ++ ", ".intercalate (parents.map (·.sourceText)).toList
 
 /-- Replace the extends clause in source with new parents.
     If parents is empty, removes the extends clause entirely. -/
 def replaceExtendsClause (source : String) (extendsRange : String.Pos.Raw × String.Pos.Raw)
-    (newParents : Array Name) : String :=
+    (newParents : Array ParentInfo) : String :=
   let before := String.Pos.Raw.extract source ⟨0⟩ extendsRange.1
   let after := String.Pos.Raw.extract source extendsRange.2 source.rawEndPos
   before ++ renderExtendsClause newParents ++ after
@@ -269,7 +290,7 @@ def extendsSimplificationPass : Pass where
       let some extendsRange := getExtendsClauseRange? extendsStx
         | continue
 
-      let parents := extractParentsFromExtends extendsStx
+      let parents := extractParentsFromExtends extendsStx ctx.source
       if parents.isEmpty then continue
 
       -- Get the environment after this command (so we can look up parent info)
@@ -285,8 +306,7 @@ def extendsSimplificationPass : Pass where
 
         -- Try 1: Remove this parent entirely
         let remainingParents := parents.filter (·.name != parent.name)
-        let remainingNames := remainingParents.map (·.name)
-        let newSource := replaceExtendsClause ctx.source extendsRange remainingNames
+        let newSource := replaceExtendsClause ctx.source extendsRange remainingParents
 
         -- Try compilation, with fallback to removing sorry-field lines if needed
         let (success, finalSource) ← tryCompileWithSorryFieldRemoval newSource ctx.fileName ctx.verbose
@@ -297,16 +317,21 @@ def extendsSimplificationPass : Pass where
           return { source := finalSource, changed := true, action := .restart }
 
         -- Try 2: Replace with grandparents
+        -- Note: grandparents are just names from the environment, so we create
+        -- synthetic ParentInfo entries. This works for simple cases but may fail
+        -- if the grandparents need type arguments.
         let grandparents := getStructureParents env parent.name
         if !grandparents.isEmpty then
           if ctx.verbose then
             IO.eprintln s!"      Trying to replace {parent.name} with its {grandparents.size} parents..."
 
           -- Build new parent list: remove current, add grandparents (avoiding duplicates)
-          let mut newParents := remainingNames
+          let remainingNames := remainingParents.map (·.name)
+          let mut newParents := remainingParents
           for gp in grandparents do
-            if !newParents.contains gp then
-              newParents := newParents.push gp
+            if !remainingNames.contains gp then
+              -- Create synthetic ParentInfo with just the name (no type args)
+              newParents := newParents.push { name := gp, sourceText := toString gp, startPos := 0, endPos := 0 }
 
           let newSource := replaceExtendsClause ctx.source extendsRange newParents
 
