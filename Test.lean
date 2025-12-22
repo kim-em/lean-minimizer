@@ -14,6 +14,7 @@ import LeanMinimizerTest.Component.BuildDependencyMap
 import LeanMinimizerTest.Component.ComputeReachable
 import LeanMinimizerTest.Component.DependencyHeuristic
 import LeanMinimizerTest.Component.DdminIdempotent
+import LeanMinimizerTest.Component.StripAssertNotExists
 import LeanMinimizerTest.Golden
 
 open Lean System LeanMinimizer
@@ -455,7 +456,8 @@ unsafe def runComponentTests : IO (Nat × Nat) := do
     LeanMinimizerTest.Component.BuildDependencyMap.test,
     LeanMinimizerTest.Component.ComputeReachable.test,
     LeanMinimizerTest.Component.DependencyHeuristic.test,
-    LeanMinimizerTest.Component.DdminIdempotent.test
+    LeanMinimizerTest.Component.DdminIdempotent.test,
+    LeanMinimizerTest.Component.StripAssertNotExists.test
   ]
 
   for test in tests do

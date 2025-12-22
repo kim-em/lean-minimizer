@@ -237,6 +237,16 @@ def analyzeModuleForInlining (source : String) (fileName : String) :
 
   return (header, body, openScopes)
 
+/-- Remove `assert_not_exists` lines from module body.
+    These assertions can fail after import merging when the asserted
+    declaration becomes available via other imports. -/
+def stripAssertNotExists (body : String) : String := Id.run do
+  let lines := body.splitOn "\n"
+  let filteredLines := lines.filter fun line =>
+    let trimmed := line.trimAsciiStart.toString
+    !trimmed.startsWith "assert_not_exists "
+  "\n".intercalate filteredLines
+
 /-- Build source with inlined import.
     Parameters:
     - usesModule: whether original file uses module system
@@ -345,9 +355,12 @@ unsafe def importInliningPass : Pass where
           -- Build new import list
           let newImports := mergeImports imports imp moduleImports
 
+          -- Strip assert_not_exists commands which can fail after import merging
+          let cleanModuleBody := stripAssertNotExists moduleBody
+
           -- Build new source
           let newSource := buildInlinedSource usesModule hasPrelude newImports
-                                              imp.moduleName moduleBody openScopes
+                                              imp.moduleName cleanModuleBody openScopes
                                               commandsPart stripModifiers
 
           -- Test compilation
