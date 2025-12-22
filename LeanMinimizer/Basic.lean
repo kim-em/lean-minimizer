@@ -73,6 +73,11 @@ Options:
   --no-extends
     Disable the extends clause simplification pass.
 
+  --resume
+    Resume a previous minimization run. If the output file exists, use it
+    as the input instead of the original file. This allows continuing an
+    interrupted minimization.
+
   --only-<PASS>
     Run only the specified pass once. Available passes:
       --only-module-removal    Module system removal
@@ -131,6 +136,8 @@ structure Args where
   noExtendsSimplification : Bool := false
   /-- Run only a specific pass (by CLI flag name) -/
   onlyPass : Option String := none
+  /-- Resume from output file if it exists -/
+  resume : Bool := false
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -169,6 +176,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-extends" :: rest => go rest { acc with onlyPass := some "extends" }
     | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
+    | "--resume" :: rest => go rest { acc with resume := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"

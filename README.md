@@ -20,6 +20,7 @@ lake exe minimize <file.lean> [options]
 - `--no-sorry`: Disable the body replacement pass
 - `--no-text-subst`: Disable the text substitution pass
 - `--no-extends`: Disable the extends clause simplification pass
+- `--resume`: Resume from the output file if it exists (useful for continuing interrupted runs)
 - `--help`: Show help message
 
 ### Example
@@ -42,6 +43,20 @@ lake exe minimize test.lean
 ```
 
 Produces a minimal, self-contained file with the import inlined and unused definitions removed.
+
+### Resuming Interrupted Runs
+
+Minimization can take a while for large files. If you need to interrupt and resume later:
+
+```bash
+# Initial run (Ctrl-C to interrupt)
+lake exe minimize test.lean
+
+# Resume from where you left off
+lake exe minimize test.lean --resume
+```
+
+The `--resume` flag checks if the output file (`test.out.lean`) exists and uses it as input instead of the original file.
 
 ## How it works
 

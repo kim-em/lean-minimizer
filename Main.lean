@@ -178,7 +178,6 @@ unsafe def main (args : List String) : IO UInt32 := do
       return 0
 
     try
-      let input ← IO.FS.readFile parsedArgs.file
       let passes := buildPassList parsedArgs
       -- Default output file: replace .lean with .out.lean
       let outputFile := parsedArgs.outputFile.getD
@@ -186,7 +185,18 @@ unsafe def main (args : List String) : IO UInt32 := do
           (parsedArgs.file.dropEnd 5).toString ++ ".out.lean"
         else
           parsedArgs.file ++ ".out.lean")
-      let _ ← runPasses passes input parsedArgs.file parsedArgs.marker
+      -- If --resume is set and output file exists, use it as input
+      let inputFile ← if parsedArgs.resume then do
+        if ← System.FilePath.pathExists outputFile then
+          IO.eprintln s!"Resuming from {outputFile}"
+          pure outputFile
+        else
+          IO.eprintln s!"Output file {outputFile} not found, starting fresh"
+          pure parsedArgs.file
+      else
+        pure parsedArgs.file
+      let input ← IO.FS.readFile inputFile
+      let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)
       IO.eprintln s!"Output written to {outputFile}"
       return 0
