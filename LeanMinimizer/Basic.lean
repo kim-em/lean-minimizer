@@ -525,13 +525,16 @@ unsafe def ddminCore (heuristic : SplitHeuristic) (state : MinState)
     writeProgress state withoutFirst
     return ← ddminCore heuristic state secondHalf withoutFirst
 
-  -- Both halves are needed; recurse on each
+  -- Both halves are needed; recurse on each (but skip singletons - already tested)
   -- Process second half first (end-biased), then first half with updated kept set
   if state.verbose then
     IO.eprintln s!"    → Failed: both halves needed, recursing on each"
 
-  let afterSecond ← ddminCore heuristic state secondHalf currentlyKept
-  let afterFirst ← ddminCore heuristic state firstHalf afterSecond
+  -- Skip singleton halves - the failed half-tests already proved they're required
+  let afterSecond ← if secondHalf.size == 1 then pure currentlyKept
+                    else ddminCore heuristic state secondHalf currentlyKept
+  let afterFirst ← if firstHalf.size == 1 then pure afterSecond
+                   else ddminCore heuristic state firstHalf afterSecond
   return afterFirst
 
 /-- Delta debugging algorithm to find minimal required commands.

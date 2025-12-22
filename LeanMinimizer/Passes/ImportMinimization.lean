@@ -237,11 +237,14 @@ partial def ddminImportsCore (state : ImportMinState)
       IO.eprintln s!"      → Success, recursing on second half"
     return ← ddminImportsCore state secondHalf withoutFirst
 
-  -- Both halves needed; recurse on each
+  -- Both halves needed; recurse on each (but skip singletons - already tested)
   if state.verbose then
     IO.eprintln s!"      → Failed: both halves needed, recursing on each"
-  let afterSecond ← ddminImportsCore state secondHalf currentlyKept
-  let afterFirst ← ddminImportsCore state firstHalf afterSecond
+  -- Skip singleton halves - the failed half-tests already proved they're required
+  let afterSecond ← if secondHalf.size == 1 then pure currentlyKept
+                    else ddminImportsCore state secondHalf currentlyKept
+  let afterFirst ← if firstHalf.size == 1 then pure afterSecond
+                   else ddminImportsCore state firstHalf afterSecond
   return afterFirst
 
 /-- Delta debugging entry point for imports.
