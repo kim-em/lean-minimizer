@@ -34,11 +34,11 @@ Remove macros/notation by inlining their expansions at use sites.
 
 ## Only attempt some changes once.
 
-Many reductions don't really need to be attempted over and over again. For example, if we've tried removing a "protected" modifier and it didn't work, it not worth trying again. (I think all the text modification passes could benefit from this.)
+✅ **Implemented** for TextSubstitution and ExtendsSimplification passes.
 
-Perhaps we can have a memory (e.g. in this case that could just include the proposed text change, i.e. the line before the change and the line after), and not reattempt things we've remembered that we've done before (perhaps different passes could use different parts of this "memory").
+A memory system tracks failed transformations using string keys. When a change fails (e.g., removing a `noncomputable` modifier), it's recorded in memory and skipped on subsequent attempts. The `clearMemoryPass` at the end triggers one final sweep with empty memory to catch any changes that became possible due to context changes.
 
-It's probably best that to be really sure that as a very final pass, we actually clear the memory (and restart if there was anything to clear, but continue if that memory was empty).
+**Future**: Could extend to BodyReplacement (track by declaration name), ImportInlining (track by module name), etc.
 
 ## Extract Goal for Tactic Failures
 **Complex pass involving invariant modification.** If the test case is showing that a tactic fails, but there are tactic steps *before* the interesting failure, we can use `extract_goal` before the failing tactic to get a simpler theorem where the tactic should also fail. This creates a new, smaller theorem that isolates the failure.
