@@ -301,7 +301,11 @@ def testSourceCompilesInline (source : String) (fileName : String) : IO Bool :=
 /-- The import inlining pass.
 
     Iteratively tries to inline imports one at a time, returning `.restart` after each
-    successful inlining to allow deletion and minimization of the newly inlined code. -/
+    successful inlining to allow deletion and minimization of the newly inlined code.
+
+    If inlining a particular import fails (compilation test fails), we try the next one.
+    Only if ALL imports fail to inline do we report a fatal error. This handles cases
+    where import order matters. -/
 unsafe def importInliningPass : Pass where
   name := "Import Inlining"
   cliFlag := "import-inlining"
@@ -327,6 +331,9 @@ unsafe def importInliningPass : Pass where
 
     -- Whether to strip modifiers when generating imports
     let stripModifiers := !usesModule
+
+    -- Track imports that failed compilation (not just couldn't be found/analyzed)
+    let mut compilationFailures : Array (Name × String) := #[]
 
     -- Try to inline each import (using indexed loop to avoid ForIn issues)
     for i in [:imports.size] do
@@ -369,18 +376,29 @@ unsafe def importInliningPass : Pass where
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
             return { source := newSource, changed := true, action := .restart }
           else
-            -- Fatal error: import inlining should theoretically always succeed
-            if let some outPath := ctx.outputFile then
-              IO.FS.writeFile outPath newSource
-            IO.eprintln s!"\n\nFATAL: Import inlining failed for {imp.moduleName}"
-            IO.eprintln s!"This should never happen - import inlining should always succeed."
-            IO.eprintln s!"The failed source has been written to the output file for debugging."
-            IO.Process.exit 1
+            -- Compilation failed - record it and try the next import
+            -- (import order might matter in some cases)
+            if ctx.verbose then
+              IO.eprintln s!"    Compilation failed after inlining, trying next import"
+            compilationFailures := compilationFailures.push (imp.moduleName, newSource)
         catch e =>
           if ctx.verbose then
             IO.eprintln s!"    Error analyzing module: {e}, skipping"
 
-    -- No imports could be inlined
+    -- Check if we had compilation failures but no successes
+    if !compilationFailures.isEmpty then
+      -- All attempted inlinings failed - this is fatal
+      IO.eprintln s!"\n\nFATAL: All {compilationFailures.size} import inlining attempts failed."
+      IO.eprintln s!"Failed imports: {compilationFailures.map (·.1)}"
+      IO.eprintln s!"This should never happen - import inlining should always succeed."
+      -- Write the last failed source to output for debugging
+      if let some outPath := ctx.outputFile then
+        if let some (_, lastSource) := compilationFailures.back? then
+          IO.FS.writeFile outPath lastSource
+          IO.eprintln s!"The last failed source has been written to the output file for debugging."
+      IO.Process.exit 1
+
+    -- No imports could be inlined (none found or all had analysis errors)
     if ctx.verbose then
       IO.eprintln "  No imports could be inlined"
     return { source := ctx.source, changed := false, action := .continue }

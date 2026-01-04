@@ -125,8 +125,13 @@ def replaceWithSorry (source : String) (startPos endPos : String.Pos.Raw) : Stri
     2. If that fails, try replacing Prop-valued subexpressions with `sorry`
     3. If that fails and it's a where-structure, try replacing field values with `sorry`
 
-    Returns `.repeatThenRestart` on success to continue replacing bodies until
-    exhausted, then restart from pass 0 to allow other passes to run. -/
+    The pass continues through ALL declarations in a single sweep before restarting.
+    Since we process from high to low indices (late to early in the file), after
+    modifying a declaration at index i, positions for indices 0..i-1 remain valid
+    because they're BEFORE the modification point in the source.
+
+    Returns `.repeatThenRestart` after completing a full pass with changes, allowing
+    other passes to run before another body replacement pass. -/
 def bodyReplacementPass : Pass where
   name := "Body Replacement"
   cliFlag := "body-replacement"
@@ -135,8 +140,13 @@ def bodyReplacementPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Processing {ctx.markerIdx} commands for body replacement..."
 
-    -- Process declarations from just before marker going upward
-    -- Use ctx.steps for full syntax and InfoTrees (available in subprocess mode)
+    -- Track current source (mutated as we make replacements)
+    let mut currentSource := ctx.source
+    let mut anyChanges := false
+
+    -- Process declarations from just before marker going upward (high to low index).
+    -- Since we process from high to low, modifications at high positions (later in file)
+    -- don't affect positions at low indices (earlier in file), so no offset tracking needed.
     for i in (List.range ctx.markerIdx).reverse do
       let some step := ctx.steps[i]?
         | continue
@@ -145,22 +155,32 @@ def bodyReplacementPass : Pass where
       let some bodyRange := getDeclBodyRange? step.stx
         | continue
 
+      -- Use original positions directly - they're still valid because we process
+      -- from high to low, and modifications at higher positions don't shift lower ones
+      let startPos := bodyRange.1
+      let endPos := bodyRange.2
+
       -- Skip if body is already sorry
-      if bodyIsSorry ctx.source bodyRange.1 bodyRange.2 then
+      if bodyIsSorry currentSource startPos endPos then
         continue
 
       if ctx.verbose then
         IO.eprintln s!"    Trying declaration at index {i}..."
 
       -- Phase 1: Try replacing entire body with sorry
-      let newSource := replaceWithSorry ctx.source bodyRange.1 bodyRange.2
+      let newSource := replaceWithSorry currentSource startPos endPos
       if ← testCompilesSubprocess newSource ctx.fileName then
         if ctx.verbose then
           IO.eprintln s!"    Success: replaced entire body with sorry"
-        return { source := newSource, changed := true, action := .repeatThenRestart }
+        currentSource := newSource
+        anyChanges := true
+        continue  -- Continue to next declaration instead of returning
 
       -- Phase 2: Try replacing Prop-valued subexpressions with sorry
       -- These are subexpressions whose type is Prop (proofs)
+      -- Note: We only try ONE replacement per declaration when continuing,
+      -- since subexpression positions within the same declaration become invalid
+      -- after modification. The next full pass will catch remaining subexpressions.
       let propSubexprs ← extractPropSubexprs step.trees bodyRange.1 bodyRange.2
       -- Sort by end position descending to process from right to left
       let sortedPropSubexprs := propSubexprs.qsort (fun a b => a.2 > b.2)
@@ -173,15 +193,21 @@ def bodyReplacementPass : Pass where
         if !isNested then
           uniquePropRanges := uniquePropRanges.push range
 
-      for (startPos, endPos) in uniquePropRanges do
+      let mut madeSubexprChange := false
+      for (subStartPos, subEndPos) in uniquePropRanges do
+        if madeSubexprChange then break  -- Only one replacement per declaration
         -- Skip if already sorry
-        if bodyIsSorry ctx.source startPos endPos then
+        if bodyIsSorry currentSource subStartPos subEndPos then
           continue
-        let newSource := replaceWithSorry ctx.source startPos endPos
+        let newSource := replaceWithSorry currentSource subStartPos subEndPos
         if ← testCompilesSubprocess newSource ctx.fileName then
           if ctx.verbose then
             IO.eprintln s!"    Success: replaced Prop subexpression with sorry"
-          return { source := newSource, changed := true, action := .repeatThenRestart }
+          currentSource := newSource
+          anyChanges := true
+          madeSubexprChange := true
+
+      if madeSubexprChange then continue  -- Move to next declaration
 
       -- Phase 3: For where-structures, try replacing individual field values
       let inner := getInnerDecl? step.stx
@@ -191,19 +217,28 @@ def bodyReplacementPass : Pass where
           let fieldRanges := getWhereFieldValueRanges dv
           -- Sort by end position descending to process from right to left
           let sortedFieldRanges := fieldRanges.qsort (fun a b => a.2 > b.2)
-          for (startPos, endPos) in sortedFieldRanges do
+          let mut madeFieldChange := false
+          for (fieldStartPos, fieldEndPos) in sortedFieldRanges do
+            if madeFieldChange then break  -- Only one replacement per declaration
             -- Skip if already sorry
-            if bodyIsSorry ctx.source startPos endPos then
+            if bodyIsSorry currentSource fieldStartPos fieldEndPos then
               continue
-            let newSource := replaceWithSorry ctx.source startPos endPos
+            let newSource := replaceWithSorry currentSource fieldStartPos fieldEndPos
             if ← testCompilesSubprocess newSource ctx.fileName then
               if ctx.verbose then
                 IO.eprintln s!"    Success: replaced where-structure field with sorry"
-              return { source := newSource, changed := true, action := .repeatThenRestart }
+              currentSource := newSource
+              anyChanges := true
+              madeFieldChange := true
 
-    -- No changes possible
-    if ctx.verbose then
-      IO.eprintln s!"  No body replacements possible"
-    return { source := ctx.source, changed := false, action := .continue }
+    -- Return results
+    if anyChanges then
+      if ctx.verbose then
+        IO.eprintln s!"  Completed pass with changes, will repeat then restart"
+      return { source := currentSource, changed := true, action := .repeatThenRestart }
+    else
+      if ctx.verbose then
+        IO.eprintln s!"  No body replacements possible"
+      return { source := ctx.source, changed := false, action := .continue }
 
 end LeanMinimizer
