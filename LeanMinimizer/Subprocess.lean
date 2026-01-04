@@ -108,6 +108,10 @@ structure SubprocessPassResult where
   changed : Bool
   /-- Action to take next: "restart", "repeat", or "continue" -/
   action : String
+  /-- Failed changes to add to memory (keys are pass-specific strings) -/
+  newFailedChanges : Array String := #[]
+  /-- Whether to clear the failed changes memory -/
+  clearMemory : Bool := false
   deriving ToJson, FromJson, Inhabited
 
 /-! ## Subprocess data analysis -/
@@ -451,13 +455,21 @@ def runAnalyzeSubprocess (source : String) (fileName : String) : IO SubprocessFr
     Stderr is inherited so verbose output appears in real-time.
     Only stdout is captured for the JSON result. -/
 def runPassSubprocess (passName : String) (source : String) (fileName : String)
-    (marker : String) (verbose : Bool) : IO SubprocessPassResult := do
+    (marker : String) (verbose : Bool)
+    (failedChanges : Std.HashSet String := {}) : IO SubprocessPassResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
-  let args := if verbose then
-    #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker, "--verbose"]
-  else
-    #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
+  -- Write failedChanges to a temp file if non-empty
+  let failedChangesFile := tempSource.toString ++ ".memory"
+  if !failedChanges.isEmpty then
+    let failedArray := failedChanges.toArray
+    IO.FS.writeFile failedChangesFile (toJson failedArray).compress
+
+  let mut args := #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
+  if verbose then
+    args := args.push "--verbose"
+  if !failedChanges.isEmpty then
+    args := args ++ #["--memory-file", failedChangesFile]
 
   let child ← IO.Process.spawn {
     cmd := "lake"
@@ -471,6 +483,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
   let exitCode ← child.wait
 
   IO.FS.removeFile tempSource
+  if !failedChanges.isEmpty then
+    IO.FS.removeFile failedChangesFile
 
   if exitCode != 0 then
     throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"

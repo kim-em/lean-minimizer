@@ -481,36 +481,62 @@ def miniPasses : Array MiniPass := #[
   { name := "Modifier removal", findReplacements := findModifierReplacements }
 ]
 
+/-- Compute a memory key for a replacement -/
+def replacementKey (source : String) (r : Replacement) : String :=
+  let oldText := String.Pos.Raw.extract source r.startPos r.endPos
+  s!"text:{oldText}→{r.replacement}"
+
 /-- Try replacements: all at once first, then one-by-one from bottom up.
-    Returns Some newSource if any replacements succeeded, None otherwise. -/
+    Returns (newSource?, newlyFailedKeys).
+    Skips replacements that are already in failedChanges. -/
 def tryReplacements (source : String) (replacements : Array Replacement)
-    (fileName : String) (verbose : Bool) : IO (Option String) := do
+    (fileName : String) (verbose : Bool)
+    (failedChanges : Std.HashSet String) : IO (Option String × Array String) := do
   if replacements.isEmpty then
-    return none
+    return (none, #[])
 
   -- Sort by position descending (so we apply from bottom to top)
   let sorted := replacements.qsort (fun a b => a.startPos.byteIdx > b.startPos.byteIdx)
 
-  -- Try all at once
-  let allAtOnce := applyReplacements source sorted
+  -- Filter out replacements that are already in memory (known to fail)
+  let filtered := sorted.filter fun r =>
+    let key := replacementKey source r
+    !failedChanges.contains key
+
+  if filtered.isEmpty then
+    if verbose then
+      IO.eprintln s!"      All {sorted.size} replacements already in memory, skipping"
+    return (none, #[])
+
+  let skippedCount := sorted.size - filtered.size
+  if skippedCount > 0 && verbose then
+    IO.eprintln s!"      Skipping {skippedCount} replacements from memory"
+
+  -- Try all at once (only with filtered replacements)
+  let allAtOnce := applyReplacements source filtered
   if ← testCompilesSubprocess allAtOnce fileName then
     if verbose then
-      IO.eprintln s!"      Applied all {sorted.size} replacements at once"
-    return some allAtOnce
+      IO.eprintln s!"      Applied all {filtered.size} replacements at once"
+    return (some allAtOnce, #[])
 
   -- Try one by one from bottom up
   let mut currentSource := source
   let mut anyChanged := false
-  for r in sorted do
+  let mut failedKeys : Array String := #[]
+  for r in filtered do
+    let key := replacementKey currentSource r
     let newSource := applyReplacement currentSource r
     if ← testCompilesSubprocess newSource fileName then
       currentSource := newSource
       anyChanged := true
+    else
+      -- Record this as a failed change
+      failedKeys := failedKeys.push key
 
   if anyChanged then
-    return some currentSource
+    return (some currentSource, failedKeys)
   else
-    return none
+    return (none, failedKeys)
 
 /-- The text substitution pass.
 
@@ -521,6 +547,7 @@ def textSubstitutionPass : Pass where
   run := fun ctx => do
     let mut source := ctx.source
     let mut anyChanged := false
+    let mut allFailedKeys : Array String := #[]
 
     if ctx.verbose then
       IO.eprintln "  Running text substitution mini-passes..."
@@ -545,17 +572,19 @@ def textSubstitutionPass : Pass where
       if !replacements.isEmpty then
         if ctx.verbose then
           IO.eprintln s!"    {miniPass.name}: found {replacements.size} potential replacements"
-        if let some newSource ← tryReplacements source replacements ctx.fileName ctx.verbose then
+        let (result, failedKeys) ← tryReplacements source replacements ctx.fileName ctx.verbose ctx.failedChanges
+        allFailedKeys := allFailedKeys ++ failedKeys
+        if let some newSource := result then
           source := newSource
           anyChanged := true
 
     if anyChanged then
       if ctx.verbose then
         IO.eprintln "  Text substitution made changes, restarting"
-      return { source, changed := true, action := .restart }
+      return { source, changed := true, action := .restart, newFailedChanges := allFailedKeys }
     else
       if ctx.verbose then
         IO.eprintln "  No text substitutions possible"
-      return { source, changed := false, action := .continue }
+      return { source, changed := false, action := .continue, newFailedChanges := allFailedKeys }
 
 end LeanMinimizer

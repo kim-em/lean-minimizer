@@ -106,4 +106,7 @@
 [Pass 9] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
+[Pass 10] Running: Clear Memory
+  Memory is empty, no final sweep needed
+  No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

@@ -48,7 +48,8 @@ unsafe def subprocessPassRegistry : Array (String × Pass) := #[
   ("import-minimization", importMinimizationPass)
 ]
 
-private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : String) (verbose : Bool) : IO Unit := do
+private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : String) (verbose : Bool)
+    (failedChanges : Std.HashSet String := {}) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -74,6 +75,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     subprocessCommands := result.steps.map (·.toSubprocessInfo)
     markerIdx
     outputFile := none
+    failedChanges
   }
 
   -- Run the pass
@@ -90,12 +92,15 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     source := passResult.source
     changed := passResult.changed
     action := actionStr
+    newFailedChanges := passResult.newFailedChanges
+    clearMemory := passResult.clearMemory
   }
   IO.println (toJson jsonResult).compress
 
-private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) (verbose : Bool) : IO UInt32 := do
+private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) (verbose : Bool)
+    (failedChanges : Std.HashSet String := {}) : IO UInt32 := do
   try
-    runPassInnerCore pass file marker verbose
+    runPassInnerCore pass file marker verbose failedChanges
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -104,15 +109,28 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
 /-- Handle --run-pass subcommand (for subprocess invocation).
     This runs a specific pass with full elaboration data.
     Calls processHeader ONCE, runs the pass, outputs JSON result. -/
-unsafe def handleRunPass (passName : String) (file : String) (marker : String) (verbose : Bool) : IO UInt32 := do
+unsafe def handleRunPass (passName : String) (file : String) (marker : String) (verbose : Bool)
+    (memoryFile : Option String := none) : IO UInt32 := do
   initSearchPath (← findSysroot)
+
+  -- Read failedChanges from memory file if provided
+  let failedChanges ← if let some memFile := memoryFile then
+    let content ← IO.FS.readFile memFile
+    match Json.parse content with
+    | .error _ => pure ({} : Std.HashSet String)
+    | .ok json =>
+      match fromJson? json with
+      | .error _ => pure ({} : Std.HashSet String)
+      | .ok (arr : Array String) => pure (arr.foldl (init := {}) fun acc s => acc.insert s)
+  else
+    pure {}
 
   -- Find the pass
   match subprocessPassRegistry.find? (·.1 == passName) with
   | none =>
     IO.eprintln s!"Unknown pass: {passName}"
     return 1
-  | some (_, pass) => runPassInner pass file marker verbose
+  | some (_, pass) => runPassInner pass file marker verbose failedChanges
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -126,11 +144,12 @@ unsafe def allPasses : Array (String × Pass) := #[
   ("extends", extendsSimplificationPass),
   ("attr-expansion", attributeExpansionPass),
   ("import-minimization", importMinimizationPass),
-  ("import-inlining", importInliningPass)
+  ("import-inlining", importInliningPass),
+  ("clear-memory", clearMemoryPass)
 ]
 
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Deletion → Empty Scope Removal → Singleton Namespace Flattening → Public Section Removal → Body Replacement → Text Substitution → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Singleton Namespace Flattening → Public Section Removal → Body Replacement → Text Substitution → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining → Clear Memory -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   -- If --only-X is specified, run only that pass
   if let some passName := args.onlyPass then
@@ -151,6 +170,7 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     |> (·.push attributeExpansionPass)  -- Always run attribute expansion
     |> (if args.noImportMinimization then id else (·.push importMinimizationPass))
     |> (if args.noImportInlining then id else (·.push importInliningPass))
+    |> (·.push clearMemoryPass)  -- Always run clear memory pass at the end
 
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do
@@ -163,6 +183,12 @@ unsafe def main (args : List String) : IO UInt32 := do
       return ← handleRunPass passName file marker false
   | ["--run-pass", passName, file, "--marker", marker, "--verbose"] =>
       return ← handleRunPass passName file marker true
+  | ["--run-pass", passName, file, "--marker", marker, "--memory-file", memFile] =>
+      return ← handleRunPass passName file marker false (some memFile)
+  | ["--run-pass", passName, file, "--marker", marker, "--verbose", "--memory-file", memFile] =>
+      return ← handleRunPass passName file marker true (some memFile)
+  | ["--run-pass", passName, file, "--marker", marker, "--memory-file", memFile, "--verbose"] =>
+      return ← handleRunPass passName file marker true (some memFile)
   | _ => pure ()
 
   initSearchPath (← findSysroot)

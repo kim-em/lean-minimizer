@@ -64,6 +64,8 @@ structure PassContext where
   markerIdx : Nat
   /-- Output file path for intermediate results (optional) -/
   outputFile : Option String := none
+  /-- Memory of failed changes: keys are pass-specific strings -/
+  failedChanges : Std.HashSet String := {}
 
 /-- Result of running a pass -/
 structure PassResult where
@@ -73,6 +75,10 @@ structure PassResult where
   changed : Bool
   /-- What to do next (only used if changed=true) -/
   action : PassAction
+  /-- Failed changes to add to memory (keys are pass-specific strings) -/
+  newFailedChanges : Array String := #[]
+  /-- Whether to clear the failed changes memory -/
+  clearMemory : Bool := false
   deriving Inhabited
 
 /-- A minimization pass -/
@@ -130,7 +136,8 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
     | "repeatThenRestart" => PassAction.repeatThenRestart
     | "fatal" => PassAction.fatal
     | _ => PassAction.continue  -- Default to continue for unknown values
-  { source := result.source, changed := result.changed, action }
+  { source := result.source, changed := result.changed, action,
+    newFailedChanges := result.newFailedChanges, clearMemory := result.clearMemory }
 
 /-- Run passes in sequence according to their on-success actions.
     Uses subprocess-based elaboration to avoid [init] conflicts.
@@ -148,6 +155,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let maxIterations := 1000  -- Safety limit
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
+  let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
 
   -- Write initial source to output file if specified
   if let some outPath := outputFile then
@@ -162,7 +170,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
-      let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose
+      let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data
@@ -186,8 +194,17 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         subprocessCommands := subprocessResult.commands
         markerIdx
         outputFile
+        failedChanges
       }
       pass.run ctx
+
+    -- Merge new failed changes into memory
+    for key in result.newFailedChanges do
+      failedChanges := failedChanges.insert key
+
+    -- Handle clearMemory flag
+    if result.clearMemory then
+      failedChanges := {}
 
     if !result.changed then
       -- If we were in a repeatThenRestart cycle, restart now
@@ -203,7 +220,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       continue
 
     -- Verify source actually changed when pass claims it did
-    if result.source == source then
+    -- (skip this check for clearMemory passes, which restart without changing source)
+    if result.source == source && !result.clearMemory then
       throw <| IO.userError s!"FATAL: Pass '{pass.name}' reported changes but source is unchanged.\n\
         This is a bug in the pass implementation. The pass returned changed=true \
         but the source text is identical to the input."
@@ -243,5 +261,21 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     IO.eprintln s!"Warning: reached maximum iterations ({maxIterations})"
 
   return source
+
+/-- A pass that clears the failed changes memory and restarts if non-empty.
+    This ensures a final sweep without memory to catch any changes that became
+    possible due to context changes from other passes. -/
+def clearMemoryPass : Pass where
+  name := "Clear Memory"
+  cliFlag := "clear-memory"
+  run := fun ctx => do
+    if ctx.failedChanges.isEmpty then
+      if ctx.verbose then
+        IO.eprintln s!"  Memory is empty, no final sweep needed"
+      return { source := ctx.source, changed := false, action := .continue }
+    else
+      if ctx.verbose then
+        IO.eprintln s!"  Memory has {ctx.failedChanges.size} failed changes, clearing for final sweep"
+      return { source := ctx.source, changed := true, action := .restart, clearMemory := true }
 
 end LeanMinimizer

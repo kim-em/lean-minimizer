@@ -278,6 +278,8 @@ def extendsSimplificationPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Looking for structures with extends clauses..."
 
+    let mut failedKeys : Array String := #[]
+
     -- Process structures from just before marker going upward
     for i in (List.range ctx.markerIdx).reverse do
       let some step := ctx.steps[i]?
@@ -285,6 +287,8 @@ def extendsSimplificationPass : Pass where
 
       -- Check if this is a structure with extends
       let some structStx := getStructureSyntax? step.stx
+        | continue
+      let some structName := getStructureName? structStx
         | continue
       let some extendsStx := findExtendsClause? structStx
         | continue
@@ -298,55 +302,78 @@ def extendsSimplificationPass : Pass where
       let env := step.after
 
       if ctx.verbose then
-        IO.eprintln s!"    Found structure at index {i} with {parents.size} parents..."
+        IO.eprintln s!"    Found structure {structName} at index {i} with {parents.size} parents..."
 
       -- Try each parent for removal or replacement
       for parent in parents do
-        if ctx.verbose then
-          IO.eprintln s!"      Trying to remove parent {parent.name}..."
-
         -- Try 1: Remove this parent entirely
-        let remainingParents := parents.filter (·.name != parent.name)
-        let newSource := replaceExtendsClause ctx.source extendsRange remainingParents
+        let removeKey := s!"extends:{structName}/{parent.name}/remove"
 
-        -- Try compilation, with fallback to removing sorry-field lines if needed
-        let (success, finalSource) ← tryCompileWithSorryFieldRemoval newSource ctx.fileName ctx.verbose
-        if success then
+        -- Skip if already in memory
+        if ctx.failedChanges.contains removeKey then
           if ctx.verbose then
-            IO.eprintln s!"        Removed parent {parent.name}"
-          -- Repeat to simplify more extends, then restart for Deletion pass
-          return { source := finalSource, changed := true, action := .repeatThenRestart }
-
-        -- Try 2: Replace with grandparents
-        -- Note: grandparents are just names from the environment, so we create
-        -- synthetic ParentInfo entries. This works for simple cases but may fail
-        -- if the grandparents need type arguments.
-        let grandparents := getStructureParents env parent.name
-        if !grandparents.isEmpty then
+            IO.eprintln s!"      Skipping remove {parent.name} (in memory)"
+        else
           if ctx.verbose then
-            IO.eprintln s!"      Trying to replace {parent.name} with its {grandparents.size} parents..."
+            IO.eprintln s!"      Trying to remove parent {parent.name}..."
 
-          -- Build new parent list: remove current, add grandparents (avoiding duplicates)
-          let remainingNames := remainingParents.map (·.name)
-          let mut newParents := remainingParents
-          for gp in grandparents do
-            if !remainingNames.contains gp then
-              -- Create synthetic ParentInfo with just the name (no type args)
-              newParents := newParents.push { name := gp, sourceText := toString gp, startPos := 0, endPos := 0 }
-
-          let newSource := replaceExtendsClause ctx.source extendsRange newParents
+          let remainingParents := parents.filter (·.name != parent.name)
+          let newSource := replaceExtendsClause ctx.source extendsRange remainingParents
 
           -- Try compilation, with fallback to removing sorry-field lines if needed
           let (success, finalSource) ← tryCompileWithSorryFieldRemoval newSource ctx.fileName ctx.verbose
           if success then
             if ctx.verbose then
-              IO.eprintln s!"        Replaced {parent.name} with its parents"
+              IO.eprintln s!"        Removed parent {parent.name}"
             -- Repeat to simplify more extends, then restart for Deletion pass
-            return { source := finalSource, changed := true, action := .repeatThenRestart }
+            return { source := finalSource, changed := true, action := .repeatThenRestart,
+                     newFailedChanges := failedKeys }
+          else
+            -- Record this as a failed change
+            failedKeys := failedKeys.push removeKey
+
+        -- Try 2: Replace with grandparents
+        let replaceKey := s!"extends:{structName}/{parent.name}/replace"
+
+        -- Skip if already in memory
+        if ctx.failedChanges.contains replaceKey then
+          if ctx.verbose then
+            IO.eprintln s!"      Skipping replace {parent.name} (in memory)"
+        else
+          -- Note: grandparents are just names from the environment, so we create
+          -- synthetic ParentInfo entries. This works for simple cases but may fail
+          -- if the grandparents need type arguments.
+          let grandparents := getStructureParents env parent.name
+          if !grandparents.isEmpty then
+            if ctx.verbose then
+              IO.eprintln s!"      Trying to replace {parent.name} with its {grandparents.size} parents..."
+
+            -- Build new parent list: remove current, add grandparents (avoiding duplicates)
+            let remainingParents := parents.filter (·.name != parent.name)
+            let remainingNames := remainingParents.map (·.name)
+            let mut newParents := remainingParents
+            for gp in grandparents do
+              if !remainingNames.contains gp then
+                -- Create synthetic ParentInfo with just the name (no type args)
+                newParents := newParents.push { name := gp, sourceText := toString gp, startPos := 0, endPos := 0 }
+
+            let newSource := replaceExtendsClause ctx.source extendsRange newParents
+
+            -- Try compilation, with fallback to removing sorry-field lines if needed
+            let (success, finalSource) ← tryCompileWithSorryFieldRemoval newSource ctx.fileName ctx.verbose
+            if success then
+              if ctx.verbose then
+                IO.eprintln s!"        Replaced {parent.name} with its parents"
+              -- Repeat to simplify more extends, then restart for Deletion pass
+              return { source := finalSource, changed := true, action := .repeatThenRestart,
+                       newFailedChanges := failedKeys }
+            else
+              -- Record this as a failed change
+              failedKeys := failedKeys.push replaceKey
 
     -- No changes possible
     if ctx.verbose then
       IO.eprintln s!"  No extends simplifications possible"
-    return { source := ctx.source, changed := false, action := .continue }
+    return { source := ctx.source, changed := false, action := .continue, newFailedChanges := failedKeys }
 
 end LeanMinimizer
