@@ -13,14 +13,26 @@ lake exe minimize <file.lean> [options]
 - `--marker <PATTERN>`: Pattern to search for in commands to identify the invariant section (default: `#guard_msgs`)
 - `-o, --output <FILE>`: Write output to FILE (default: `<input>.out.lean`)
 - `-q, --quiet`: Suppress progress information during minimization
-- `--no-module-removal`: Disable the module system removal pass
-- `--no-delete`: Disable the command deletion pass
-- `--no-import-minimization`: Disable the import minimization pass
-- `--no-import-inlining`: Disable the import inlining pass
-- `--no-sorry`: Disable the body replacement pass
-- `--no-text-subst`: Disable the text substitution pass
-- `--no-extends`: Disable the extends clause simplification pass
 - `--resume`: Resume from the output file if it exists (useful for continuing interrupted runs)
+- `--full-restarts`: Disable parsimonious restarts (for debugging)
+- `--no-<PASS>`: Disable a specific pass:
+  - `--no-module-removal`: Module system removal
+  - `--no-delete`: Command deletion (also disables empty scope and singleton namespace passes)
+  - `--no-sorry`: Body replacement (sorry)
+  - `--no-text-subst`: Text substitution
+  - `--no-extends`: Extends simplification
+  - `--no-import-minimization`: Import minimization
+  - `--no-import-inlining`: Import inlining
+- `--only-<PASS>`: Run only a specific pass:
+  - `--only-module-removal`: Module system removal
+  - `--only-delete`: Command deletion
+  - `--only-empty-scope`: Empty scope removal
+  - `--only-sorry`: Body replacement (sorry)
+  - `--only-text-subst`: Text substitution
+  - `--only-extends`: Extends simplification
+  - `--only-attr-expansion`: Attribute expansion
+  - `--only-import-minimization`: Import minimization
+  - `--only-import-inlining`: Import inlining
 - `--help`: Show help message
 
 ### Example
@@ -80,7 +92,24 @@ The dependency analysis makes minimization much faster by trying to remove unrea
 
 Removes adjacent empty scope pairs (`section X...end X` or `namespace X...end X`) that may remain after command deletion.
 
-### Pass 4: Body Replacement
+### Pass 4: Singleton Namespace Flattening
+
+Simplifies namespace wrapping when a namespace contains only a single declaration. For example:
+```lean
+namespace Foo
+def bar := 1
+end Foo
+```
+becomes:
+```lean
+def Foo.bar := 1
+```
+
+### Pass 5: Public Section Removal
+
+Removes `public section` wrappers when they're not needed, converting them to regular `section` blocks.
+
+### Pass 6: Body Replacement
 
 Replaces declaration bodies with `sorry` to simplify the test case:
 
@@ -94,7 +123,7 @@ The Prop subexpression detection uses the InfoTree to find:
 - Term expressions whose type is `Prop` (i.e., proofs)
 - Tactic blocks (`by ...`) that represent proof terms
 
-### Pass 5: Text Substitution
+### Pass 7: Text Substitution
 
 Performs textual replacements to simplify declarations:
 
@@ -107,7 +136,7 @@ Performs textual replacements to simplify declarations:
 
 Each mini-pass tries all replacements at once first; if that fails, it applies them one-by-one from bottom to top. Comments and strings are preserved.
 
-### Pass 6: Extends Simplification
+### Pass 8: Extends Simplification
 
 Simplifies `extends` clauses in structure definitions:
 
@@ -119,12 +148,16 @@ Simplifies `extends` clauses in structure definitions:
 
 This is useful when a structure extends multiple parents but only needs fields from some of them.
 
-### Pass 7: Import Minimization
+### Pass 9: Attribute Expansion
+
+Expands certain attributes to their underlying form, which can enable further simplification.
+
+### Pass 10: Import Minimization
 
 1. Tries to remove each import entirely
 2. For imports that can't be removed, tries to replace them with their transitive imports (useful when only a subset of a module's dependencies are needed)
 
-### Pass 8: Import Inlining
+### Pass 11: Import Inlining
 
 Inlines imports to create self-contained test files:
 
@@ -142,6 +175,8 @@ The minimizer uses a multi-pass architecture where each pass can:
 - **restart**: Go back to the first pass after making changes (used by import inlining to allow deletion of newly inlined code)
 - **repeat**: Run the same pass again (used by deletion when changes are made)
 - **continue**: Move to the next pass
+
+**Parsimonious restarts**: When import inlining restarts, it sets a "temp marker" at the boundary between inlined and original code. Subsequent passes only process commands before this marker, avoiding redundant work on already-minimized code. Use `--full-restarts` to disable this optimization.
 
 ## Running tests
 

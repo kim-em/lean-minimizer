@@ -28,11 +28,9 @@ Remove macros/notation by inlining their expansions at use sites.
 
 ## More parsimonious restarts
 
-Many of our current restarts are quite wasteful. Often, while we know that the changes made in a pass require re-running earlier passes, we can actually run those earlier passes just on some initial segment of the file (i.e. leaving a much longer tail of the file "invariant").
+**Import inlining**: ✅ Implemented. After inlining an import, the deletion pass only processes the newly inlined code, leaving the original commands as invariant. Uses a text-based "temp marker" to identify the boundary.
 
-For example, after inlining an import, it shouldn't be necesssary to re-run the entire deletion pass; it should suffice to just run it on the newly inlined code.
-
-We'd have to think carefully about each of the passes that causes a restart.
+**Body replacement / Extends simplification**: Not yet implemented. When a body at index `i` is replaced with `sorry`, declarations at indices `< i` (helpers) may become deletable. Could use the same temp marker mechanism - set the marker to the simplified declaration, and deletion only processes commands before it.
 
 ## Only attempt some changes once.
 
