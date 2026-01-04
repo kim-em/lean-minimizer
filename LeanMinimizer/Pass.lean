@@ -66,6 +66,13 @@ structure PassContext where
   outputFile : Option String := none
   /-- Memory of failed changes: keys are pass-specific strings -/
   failedChanges : Std.HashSet String := {}
+  /-- Temporary marker for parsimonious restarts. If set, this acts as
+      an additional invariant boundary. Commands containing this text
+      (and all after) should be treated as invariant. -/
+  tempMarker : Option String := none
+  /-- Index of temp marker in commands, if tempMarker is set.
+      Computed by finding first command containing tempMarker text. -/
+  tempMarkerIdx : Option Nat := none
 
 /-- Result of running a pass -/
 structure PassResult where
@@ -79,6 +86,12 @@ structure PassResult where
   newFailedChanges : Array String := #[]
   /-- Whether to clear the failed changes memory -/
   clearMemory : Bool := false
+  /-- Temporary marker text for parsimonious restarts.
+      When set with a restart action, subsequent passes will use this
+      as an additional invariant boundary until it's cleared.
+      The marker is the text content of the first command that should be
+      treated as invariant (and all commands after it). -/
+  tempMarker : Option String := none
   deriving Inhabited
 
 /-- A minimization pass -/
@@ -112,6 +125,18 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Opt
 
   return idx
 
+/-- Find the index of a temporary marker in CompilationStep array.
+    Returns the index of the first command whose reprinted syntax contains the marker text. -/
+def findTempMarkerIdxInSteps (steps : Array CompilationStep) (tempMarker : String) : Option Nat :=
+  steps.findIdx? fun step =>
+    let stxStr := step.stx.reprint.getD ""
+    stxStr.containsSubstr tempMarker
+
+/-- Find the index of a temporary marker in subprocess command array. -/
+def findTempMarkerIdxInSubprocess (commands : Array SubprocessCmdInfo) (tempMarker : String) : Option Nat :=
+  commands.findIdx? fun cmd =>
+    cmd.stxRepr.containsSubstr tempMarker
+
 /-- Create a MinState from PassContext, using pre-elaborated data.
     This avoids re-parsing the file. -/
 def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
@@ -143,10 +168,13 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
     Uses subprocess-based elaboration to avoid [init] conflicts.
 
     Tier 1 passes run in the orchestrator with serialized data.
-    Tier 2 passes (needsSubprocess=true) run in a subprocess with full elaboration. -/
+    Tier 2 passes (needsSubprocess=true) run in a subprocess with full elaboration.
+
+    When `fullRestarts` is true, parsimonious restarts are disabled and all restarts
+    process the entire file (for debugging/comparison). -/
 unsafe def runPasses (passes : Array Pass) (input : String)
     (fileName : String) (marker : String) (verbose : Bool)
-    (outputFile : Option String := none) : IO String := do
+    (outputFile : Option String := none) (fullRestarts : Bool := false) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -156,6 +184,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
+  let mut tempMarker : Option String := none  -- Temporary marker for parsimonious restarts
 
   -- Write initial source to output file if specified
   if let some outPath := outputFile then
@@ -182,6 +211,10 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       -- Convert subprocess result to PassContext data
       let (header, headerEndPos, steps) ← subprocessResult.toPassContextData
 
+      -- Compute temp marker index if we have a temp marker
+      let tempMarkerIdx := tempMarker.bind fun tm =>
+        findTempMarkerIdxInSubprocess subprocessResult.commands tm
+
       let ctx : PassContext := {
         source, fileName, marker, verbose
         header
@@ -195,6 +228,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         markerIdx
         outputFile
         failedChanges
+        tempMarker
+        tempMarkerIdx
       }
       pass.run ctx
 
@@ -217,6 +252,13 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         if verbose then
           IO.eprintln s!"  No changes, moving to next pass"
         passIdx := passIdx + 1
+        -- If we've completed all passes with a temp marker active, clear it and restart
+        -- to process commands that were previously beyond the temp marker boundary
+        if passIdx >= passes.size && tempMarker.isSome then
+          if verbose then
+            IO.eprintln s!"  All passes complete with temp marker active, clearing and restarting"
+          tempMarker := none
+          passIdx := 0
       continue
 
     -- Verify source actually changed when pass claims it did
@@ -234,8 +276,22 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
     match result.action with
     | .restart =>
-      if verbose then
-        IO.eprintln s!"  Changes made, restarting from first pass"
+      -- Capture temp marker if pass returned one (for parsimonious restarts)
+      -- Skip if fullRestarts mode is enabled
+      -- IMPORTANT: Don't override an existing temp marker - the first one should persist
+      -- through the entire parsimonious cycle (e.g., for transitive import inlining)
+      if result.tempMarker.isSome && !fullRestarts && tempMarker.isNone then
+        tempMarker := result.tempMarker
+        if verbose then
+          IO.eprintln s!"  Changes made, restarting with temp marker (parsimonious restart)"
+      else if tempMarker.isSome then
+        -- Keep existing temp marker
+        if verbose then
+          IO.eprintln s!"  Changes made, restarting (keeping existing temp marker)"
+      else
+        -- No temp marker
+        if verbose then
+          IO.eprintln s!"  Changes made, restarting from first pass"
       pendingRestart := false
       passIdx := 0
     | .repeat =>
@@ -262,13 +318,24 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
   return source
 
+/-- Sentinel key used to track that we've already done the final sweep -/
+private def finalSweepSentinel : String := "__final_sweep_done__"
+
 /-- A pass that clears the failed changes memory and restarts if non-empty.
     This ensures a final sweep without memory to catch any changes that became
-    possible due to context changes from other passes. -/
+    possible due to context changes from other passes.
+
+    Only triggers ONE final sweep - uses a sentinel key to prevent infinite loops. -/
 def clearMemoryPass : Pass where
   name := "Clear Memory"
   cliFlag := "clear-memory"
   run := fun ctx => do
+    -- Check if we've already done the final sweep
+    if ctx.failedChanges.contains finalSweepSentinel then
+      if ctx.verbose then
+        IO.eprintln s!"  Final sweep already done, finishing"
+      return { source := ctx.source, changed := false, action := .continue }
+    -- Check if there's anything in memory worth sweeping for
     if ctx.failedChanges.isEmpty then
       if ctx.verbose then
         IO.eprintln s!"  Memory is empty, no final sweep needed"
@@ -276,6 +343,8 @@ def clearMemoryPass : Pass where
     else
       if ctx.verbose then
         IO.eprintln s!"  Memory has {ctx.failedChanges.size} failed changes, clearing for final sweep"
-      return { source := ctx.source, changed := true, action := .restart, clearMemory := true }
+      -- Clear memory but add sentinel so we only do this once
+      return { source := ctx.source, changed := true, action := .restart,
+               clearMemory := true, newFailedChanges := #[finalSweepSentinel] }
 
 end LeanMinimizer

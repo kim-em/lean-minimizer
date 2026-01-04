@@ -298,6 +298,38 @@ def buildInlinedSource
 def testSourceCompilesInline (source : String) (fileName : String) : IO Bool :=
   testCompilesSubprocess source fileName
 
+/-- Check if a line starts a trivial command (open, variable, set_option, attribute, comment).
+    These are skipped when finding the temp marker for parsimonious restarts. -/
+def isTrivialCommandLine (line : String) : Bool :=
+  let trimmed := line.trimAsciiStart.toString
+  trimmed.isEmpty ||
+  trimmed.startsWith "--" ||
+  trimmed.startsWith "/-" ||
+  trimmed.startsWith "open " ||
+  trimmed == "open" ||
+  trimmed.startsWith "variable " ||
+  trimmed == "variable" ||
+  trimmed.startsWith "set_option " ||
+  trimmed.startsWith "attribute " ||
+  trimmed.startsWith "universe " ||
+  trimmed == "universe" ||
+  trimmed.startsWith "noncomputable " ||
+  trimmed == "noncomputable"
+
+/-- Find the first non-trivial command line for use as temp marker.
+    Skips: open, variable, set_option, attribute, universe, comments, blank lines.
+    Returns the first line of the first non-trivial command, or none if all are trivial. -/
+def findFirstNontrivialCommand (commandsPart : String) : Option String := Id.run do
+  let lines := commandsPart.splitOn "\n"
+  for line in lines do
+    if !isTrivialCommandLine line then
+      -- Return this line (trimmed) as the marker
+      -- We return the whole line to maximize uniqueness
+      let trimmed := line.trimAscii.toString
+      if !trimmed.isEmpty then
+        return some trimmed
+  return none
+
 /-- The import inlining pass.
 
     Iteratively tries to inline imports one at a time, returning `.restart` after each
@@ -374,7 +406,11 @@ unsafe def importInliningPass : Pass where
           if ← testSourceCompilesInline newSource ctx.fileName then
             if ctx.verbose then
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
-            return { source := newSource, changed := true, action := .restart }
+            -- Find temp marker for parsimonious restart
+            let tempMarker := findFirstNontrivialCommand commandsPart
+            if ctx.verbose && tempMarker.isSome then
+              IO.eprintln s!"    Using temp marker for parsimonious restart: {tempMarker.get!.take 50}..."
+            return { source := newSource, changed := true, action := .restart, tempMarker }
           else
             -- Compilation failed - record it and try the next import
             -- (import order might matter in some cases)

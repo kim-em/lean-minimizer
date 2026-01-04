@@ -37,12 +37,21 @@ unsafe def deletionPass : Pass where
   name := "Command Deletion"
   cliFlag := "delete"
   run := fun ctx => do
+    -- Compute effective upper bound: min of real marker and temp marker (if set)
+    -- This enables parsimonious restarts - only delete in the active region
+    let effectiveMarkerIdx := match ctx.tempMarkerIdx with
+      | some tempIdx => min ctx.markerIdx tempIdx
+      | none => ctx.markerIdx
+
     if ctx.verbose then
       IO.eprintln s!"  Analyzing dependencies from pre-elaborated data..."
+      if ctx.tempMarkerIdx.isSome then
+        IO.eprintln s!"  (Parsimonious mode: processing up to index {effectiveMarkerIdx}, \
+          temp marker at {ctx.tempMarkerIdx.get!})"
 
     -- Use subprocess command info to compute dependency reachability
-    let commandsBeforeMarker := ctx.subprocessCommands.filter (·.idx < ctx.markerIdx)
-    let invariantCommands := ctx.subprocessCommands.filter (·.idx ≥ ctx.markerIdx)
+    let commandsBeforeMarker := ctx.subprocessCommands.filter (·.idx < effectiveMarkerIdx)
+    let invariantCommands := ctx.subprocessCommands.filter (·.idx ≥ effectiveMarkerIdx)
 
     -- Build dependency graph and find reachable commands
     let analyses := analyzeSubprocessCommands commandsBeforeMarker
@@ -56,23 +65,23 @@ unsafe def deletionPass : Pass where
     -- Create MinState for ddmin using pre-elaborated data (no re-parsing needed)
     let state ← mkMinStateFromContext ctx
 
-    -- Build candidate list: all indices before marker, excluding scope commands
+    -- Build candidate list: all indices before effective marker, excluding scope commands
     -- We never delete section/namespace/end individually to preserve scoping semantics
-    let allIndices := (Array.range ctx.markerIdx).filter fun idx =>
+    let allIndices := (Array.range effectiveMarkerIdx).filter fun idx =>
       if h : idx < ctx.steps.size then
         !isScopeCommand ctx.steps[idx].stx
       else
         true
 
     -- Verify original compiles
-    let originalIndices := Array.range ctx.markerIdx
+    let originalIndices := Array.range effectiveMarkerIdx
     if !(← testCompiles state originalIndices) then
       throw <| IO.userError "Source does not compile"
 
     -- Run ddmin with pre-computed dependency heuristic
     -- Note: keptIndices will only contain non-scope commands, but we need to
     -- add back the scope commands that were excluded from deletion
-    let scopeIndices := (Array.range ctx.markerIdx).filter fun idx =>
+    let scopeIndices := (Array.range effectiveMarkerIdx).filter fun idx =>
       if h : idx < ctx.steps.size then
         isScopeCommand ctx.steps[idx].stx
       else
@@ -82,12 +91,12 @@ unsafe def deletionPass : Pass where
     -- Combine kept non-scope indices with all scope indices
     let keptIndices := (keptNonScopeIndices ++ scopeIndices).qsort (· < ·)
 
-    let removed := ctx.markerIdx - keptIndices.size
+    let removed := effectiveMarkerIdx - keptIndices.size
     let changed := removed > 0
 
     if ctx.verbose then
       let finalTestCount ← state.testCount.get
-      IO.eprintln s!"  Removed {removed} of {ctx.markerIdx} commands ({finalTestCount} tests)"
+      IO.eprintln s!"  Removed {removed} of {effectiveMarkerIdx} commands ({finalTestCount} tests)"
 
     if !changed then
       return { source := ctx.source, changed := false, action := .continue }

@@ -223,7 +223,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         pure parsedArgs.file
       let input ← IO.FS.readFile inputFile
       let _ ← runPasses passes input inputFile parsedArgs.marker
-                     parsedArgs.verbose (some outputFile)
+                     parsedArgs.verbose (some outputFile) parsedArgs.fullRestarts
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>

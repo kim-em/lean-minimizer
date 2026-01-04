@@ -138,6 +138,8 @@ structure Args where
   onlyPass : Option String := none
   /-- Resume from output file if it exists -/
   resume : Bool := false
+  /-- Disable parsimonious restarts (for debugging) -/
+  fullRestarts : Bool := false
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -177,6 +179,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | "--resume" :: rest => go rest { acc with resume := true }
+    | "--full-restarts" :: rest => go rest { acc with fullRestarts := true }
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
