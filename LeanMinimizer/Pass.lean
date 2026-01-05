@@ -233,13 +233,14 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       }
       pass.run ctx
 
+    -- Handle clearMemory flag (must happen BEFORE adding new keys,
+    -- otherwise the sentinel key gets immediately cleared)
+    if result.clearMemory then
+      failedChanges := {}
+
     -- Merge new failed changes into memory
     for key in result.newFailedChanges do
       failedChanges := failedChanges.insert key
-
-    -- Handle clearMemory flag
-    if result.clearMemory then
-      failedChanges := {}
 
     if !result.changed then
       -- If we were in a repeatThenRestart cycle, restart now
