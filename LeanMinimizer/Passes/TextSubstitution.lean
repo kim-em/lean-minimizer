@@ -16,11 +16,12 @@ Mini-passes:
 1. Comment removal (/- ... -/, /-- ... -/, -- ...)
 2. lemma → theorem
 3. Type* → Type _
-4. Type _ / Type u → Type
-5. ℕ → Nat, ℤ → Int, ℚ → Rat
-6. Attribute removal (@[...])
-7. Modifier removal (unsafe/protected/private/noncomputable)
-8. Priority removal (from attributes and instances)
+4. Sort* → Sort _
+5. Type _ / Type u → Type
+6. ℕ → Nat, ℤ → Int, ℚ → Rat
+7. Attribute removal (@[...])
+8. Modifier removal (unsafe/protected/private/noncomputable)
+9. Priority removal (from attributes and instances)
 -/
 
 namespace LeanMinimizer
@@ -292,6 +293,25 @@ def findTypeStarReplacements (source : String) : Array Replacement := Id.run do
       i := i + 1
   return result
 
+/-- Find all occurrences of `Sort*` -/
+def findSortStarReplacements (source : String) : Array Replacement := Id.run do
+  let mut result := #[]
+  let endPos := source.rawEndPos.byteIdx
+  let mut i := 0
+  while i < endPos do
+    if matchesAt source i "Sort" && isWordBoundaryAt source i 4 then
+      -- Skip whitespace after Sort
+      let afterSort := skipWhitespace source (i + 4)
+      -- Check for *
+      if afterSort < endPos && String.Pos.Raw.get source ⟨afterSort⟩ == '*' then
+        result := result.push { startPos := ⟨i⟩, endPos := ⟨afterSort + 1⟩, replacement := "Sort _" }
+        i := afterSort + 1
+      else
+        i := i + 4
+    else
+      i := i + 1
+  return result
+
 /-- Find all occurrences of `Type _` or `Type u` (simple universe variable) -/
 def findTypeUniverseReplacements (source : String) : Array Replacement := Id.run do
   let mut result := #[]
@@ -473,6 +493,7 @@ def miniPasses : Array MiniPass := #[
   { name := "Comment removal", findReplacements := findCommentReplacements, skipCommentFilter := true },
   { name := "lemma→theorem", findReplacements := findLemmaReplacements },
   { name := "Type*→Type _", findReplacements := findTypeStarReplacements },
+  { name := "Sort*→Sort _", findReplacements := findSortStarReplacements },
   { name := "Type _/Type u→Type", findReplacements := findTypeUniverseReplacements },
   { name := "Unicode symbols", findReplacements := findUnicodeReplacements },
   { name := "Attribute priorities", findReplacements := findAttributePriorityReplacements },
