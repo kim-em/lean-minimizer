@@ -73,8 +73,18 @@ unsafe def deletionPass : Pass where
       else
         true
 
-    -- Verify original compiles
-    let originalIndices := Array.range effectiveMarkerIdx
+    -- In parsimonious mode, commands from effectiveMarkerIdx to markerIdx-1 are "frozen"
+    -- They are the original commands that shouldn't be touched during this pass
+    -- These must be included in all tests since reconstructSource only auto-includes markerIdx+
+    let frozenIndices := if ctx.tempMarkerIdx.isSome then
+      (Array.range ctx.markerIdx).filter (· >= effectiveMarkerIdx)
+    else
+      #[]
+
+    -- Verify original compiles (include frozen indices in the test)
+    -- Note: ddmin internally uses Array.range state.markerIdx as currentlyKept,
+    -- which includes the frozen indices. But this initial test bypasses ddmin.
+    let originalIndices := Array.range effectiveMarkerIdx ++ frozenIndices
     if !(← testCompiles state originalIndices) then
       throw <| IO.userError "Source does not compile"
 
@@ -87,11 +97,16 @@ unsafe def deletionPass : Pass where
       else
         false
     let heuristic := precomputedDependencyHeuristic reachable
+    -- ddmin internally includes frozenIndices in currentlyKept because it uses
+    -- Array.range state.markerIdx, and frozen indices are in [effectiveMarkerIdx, markerIdx)
     let keptNonScopeIndices ← ddmin heuristic state allIndices
-    -- Combine kept non-scope indices with all scope indices
-    let keptIndices := (keptNonScopeIndices ++ scopeIndices).qsort (· < ·)
+    -- Combine kept non-scope indices with all scope indices and frozen indices
+    let keptIndices := (keptNonScopeIndices ++ scopeIndices ++ frozenIndices).qsort (· < ·)
 
-    let removed := effectiveMarkerIdx - keptIndices.size
+    -- Calculate how many commands were removed from the active region
+    -- (don't count frozen indices, which were never candidates for removal)
+    let keptInActiveRegion := keptIndices.size - frozenIndices.size
+    let removed := effectiveMarkerIdx - keptInActiveRegion
     let changed := removed > 0
 
     if ctx.verbose then
