@@ -407,10 +407,16 @@ unsafe def importInliningPass : Pass where
             if ctx.verbose then
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
             -- Find temp marker for parsimonious restart
+            -- The temp marker is the first non-trivial command in the original content
+            -- We use "end ModuleName" as the search-after text to ensure we find the
+            -- temp marker in the original content, not in the newly inlined content
+            -- (which might contain similar text)
             let tempMarker := findFirstNontrivialCommand commandsPart
+            let tempMarkerSearchAfter := s!"end {imp.moduleName}"
             if ctx.verbose && tempMarker.isSome then
               IO.eprintln s!"    Using temp marker for parsimonious restart: {tempMarker.get!.take 50}..."
-            return { source := newSource, changed := true, action := .restart, tempMarker }
+            return { source := newSource, changed := true, action := .restart,
+                     tempMarker, tempMarkerSearchAfter }
           else
             -- Compilation failed - record it and try the next import
             -- (import order might matter in some cases)

@@ -92,6 +92,13 @@ structure PassResult where
       The marker is the text content of the first command that should be
       treated as invariant (and all commands after it). -/
   tempMarker : Option String := none
+  /-- Optional "search after" text for temp marker.
+      When set, the temp marker search will first find a command containing
+      this text, then search for tempMarker only in commands after that.
+      This is used by import inlining to ensure we find the temp marker in
+      the original content, not in newly inlined content that might contain
+      similar text. -/
+  tempMarkerSearchAfter : Option String := none
   deriving Inhabited
 
 /-- A minimization pass -/
@@ -132,10 +139,27 @@ def findTempMarkerIdxInSteps (steps : Array CompilationStep) (tempMarker : Strin
     let stxStr := step.stx.reprint.getD ""
     stxStr.containsSubstr tempMarker
 
-/-- Find the index of a temporary marker in subprocess command array. -/
-def findTempMarkerIdxInSubprocess (commands : Array SubprocessCmdInfo) (tempMarker : String) : Option Nat :=
-  commands.findIdx? fun cmd =>
-    cmd.stxRepr.containsSubstr tempMarker
+/-- Find the index of a temporary marker in subprocess command array.
+    If `searchAfter` is provided, first find a command containing that text,
+    then search for `tempMarker` only in commands after that position. -/
+def findTempMarkerIdxInSubprocess (commands : Array SubprocessCmdInfo) (tempMarker : String)
+    (searchAfter : Option String := none) : Option Nat :=
+  match searchAfter with
+  | none =>
+    commands.findIdx? fun cmd =>
+      cmd.stxRepr.containsSubstr tempMarker
+  | some afterText =>
+    -- First find the "search after" command
+    let afterIdx? := commands.findIdx? fun cmd =>
+      cmd.stxRepr.containsSubstr afterText
+    match afterIdx? with
+    | none => none  -- searchAfter text not found
+    | some afterIdx => Id.run do
+      -- Search for tempMarker only in commands after afterIdx
+      for i in [afterIdx + 1:commands.size] do
+        if commands[i]!.stxRepr.containsSubstr tempMarker then
+          return some i
+      return none
 
 /-- Create a MinState from PassContext, using pre-elaborated data.
     This avoids re-parsing the file. -/
@@ -185,6 +209,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
   let mut tempMarker : Option String := none  -- Temporary marker for parsimonious restarts
+  let mut tempMarkerSearchAfter : Option String := none  -- "Search after" text for temp marker
 
   -- Write initial source to output file if specified
   if let some outPath := outputFile then
@@ -213,7 +238,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
       -- Compute temp marker index if we have a temp marker
       let tempMarkerIdx := tempMarker.bind fun tm =>
-        findTempMarkerIdxInSubprocess subprocessResult.commands tm
+        findTempMarkerIdxInSubprocess subprocessResult.commands tm tempMarkerSearchAfter
 
       let ctx : PassContext := {
         source, fileName, marker, verbose
@@ -283,6 +308,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
       -- through the entire parsimonious cycle (e.g., for transitive import inlining)
       if result.tempMarker.isSome && !fullRestarts && tempMarker.isNone then
         tempMarker := result.tempMarker
+        tempMarkerSearchAfter := result.tempMarkerSearchAfter
         if verbose then
           IO.eprintln s!"  Changes made, restarting with temp marker (parsimonious restart)"
       else if tempMarker.isSome then
