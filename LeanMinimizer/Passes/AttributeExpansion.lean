@@ -67,8 +67,47 @@ def findAttrBlockRange (s : String) : Option (Nat × Nat) := Id.run do
     i := i + 1
   return none
 
+/-- Find the byte position of a substring in a string, or none if not found. -/
+def findSubstrPos (s : String) (pattern : String) : Option Nat := Id.run do
+  let sLen := s.utf8ByteSize
+  let pLen := pattern.utf8ByteSize
+  if pLen > sLen then return none
+  for i in [:sLen - pLen + 1] do
+    let substr := String.Pos.Raw.extract s ⟨i⟩ ⟨i + pLen⟩
+    if substr == pattern then return some i
+  return none
+
+/-- Extract the `(attr := ...)` attributes from a generative attribute string.
+    For example, `to_dual (attr := simp) foo` returns `some "simp"`.
+    Returns `none` if no `(attr := ...)` is present. -/
+def extractAttrFromGenerativeAttr (attrStr : String) : Option String := Id.run do
+  -- Look for "(attr := " pattern
+  let pattern := "(attr := "
+  let some startIdx := findSubstrPos attrStr pattern
+    | return none
+
+  -- Find the matching closing paren
+  let contentStart := startIdx + pattern.length
+  let mut depth := 1
+  let mut pos := contentStart
+  let bytes := attrStr.utf8ByteSize
+
+  while pos < bytes && depth > 0 do
+    let c := String.Pos.Raw.get attrStr ⟨pos⟩
+    if c == '(' then depth := depth + 1
+    else if c == ')' then depth := depth - 1
+    pos := pos + 1
+
+  if depth != 0 then return none
+
+  -- Extract content between "(attr := " and ")"
+  let content := String.Pos.Raw.extract attrStr ⟨contentStart⟩ ⟨pos - 1⟩
+  let trimmed := content.trimAscii.toString
+  if trimmed.isEmpty then none else some trimmed
+
 /-- Strip generative attributes from an attribute block, keeping others.
-    Returns the new attribute block (or empty string if all removed). -/
+    Returns the new attribute block (or empty string if all removed).
+    Preserves (attr := X) from generative attributes by keeping X. -/
 def stripGenerativeAttrsFromBlock (attrBlock : String) : String := Id.run do
   -- attrBlock is like "@[to_dual, simp]" or "@[to_dual /-- doc -/]"
   -- We need to parse and filter the attributes
@@ -104,14 +143,64 @@ def stripGenerativeAttrsFromBlock (attrBlock : String) : String := Id.run do
   if !trimmed.isEmpty then
     attrs := attrs.push trimmed
 
-  -- Filter out generative attributes
-  let filtered := attrs.filter fun attr =>
-    !generativeAttrs.any fun ga => attr.startsWith ga
+  -- Filter and transform generative attributes
+  -- For generative attrs with (attr := X), we keep X but remove the generative attr
+  let mut filtered : Array String := #[]
+  for attr in attrs do
+    if generativeAttrs.any fun ga => attr.startsWith ga then
+      -- This is a generative attribute - extract any (attr := ...) to keep
+      if let some extracted := extractAttrFromGenerativeAttr attr then
+        filtered := filtered.push extracted
+      -- Otherwise drop the whole generative attribute
+    else
+      -- Keep non-generative attributes
+      filtered := filtered.push attr
 
   if filtered.isEmpty then
     ""
   else
     "@[" ++ ", ".intercalate filtered.toList ++ "]"
+
+/-- Extract the `(attr := ...)` attributes from an attribute block for generative attrs.
+    Searches the block for any generative attribute and extracts its (attr := ...) if present. -/
+def extractAttrsFromBlock (attrBlock : String) : Option String := Id.run do
+  -- Remove @[ prefix and ] suffix
+  let blockLen := attrBlock.utf8ByteSize
+  if blockLen < 3 then return none
+
+  let inner := String.Pos.Raw.extract attrBlock ⟨2⟩ ⟨blockLen - 1⟩
+
+  -- Split by comma (being careful about nested brackets)
+  let mut attrs : Array String := #[]
+  let mut current := ""
+  let mut depth := 0
+  let mut inString := false
+
+  for c in inner.toList do
+    if c == '"' && depth == 0 then inString := !inString
+    if !inString then
+      if c == '[' || c == '(' || c == '{' then depth := depth + 1
+      else if c == ']' || c == ')' || c == '}' then depth := depth - 1
+
+    if c == ',' && depth == 0 && !inString then
+      let trimmed := current.trimAscii.toString
+      if !trimmed.isEmpty then
+        attrs := attrs.push trimmed
+      current := ""
+    else
+      current := current.push c
+
+  let trimmed := current.trimAscii.toString
+  if !trimmed.isEmpty then
+    attrs := attrs.push trimmed
+
+  -- Find generative attributes and extract their (attr := ...)
+  for attr in attrs do
+    if generativeAttrs.any fun ga => attr.startsWith ga then
+      if let some extracted := extractAttrFromGenerativeAttr attr then
+        return some extracted
+
+  return none
 
 /-- Skip leading whitespace in a string -/
 def skipLeadingWhitespace (s : String) : String := Id.run do
@@ -185,8 +274,10 @@ def getDeclKind (env : Environment) (info : ConstantInfo) : String :=
   | _ => "def"
 
 /-- Pretty-print a constant as a declaration string.
-    Uses _root_.FullName to avoid namespace issues. -/
-def ppConstantDecl (env : Environment) (name : Name) : MetaM (Option String) := do
+    Uses _root_.FullName to avoid namespace issues.
+    If `attrs` is provided, prepends `@[attrs]` to the declaration. -/
+def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := none)
+    : MetaM (Option String) := do
   let some info := env.find? name
     | return none
 
@@ -208,7 +299,11 @@ def ppConstantDecl (env : Environment) (name : Name) : MetaM (Option String) := 
         return fmt.pretty
     | none => pure "sorry"
 
-  return some s!"{kind} _root_.{name} : {typeStr} := {valueStr}"
+  let attrPrefix := match attrs with
+    | some a => s!"@[{a}] "
+    | none => ""
+
+  return some s!"{attrPrefix}{kind} _root_.{name} : {typeStr} := {valueStr}"
 
 /-! ## The pass -/
 
@@ -335,10 +430,17 @@ def attributeExpansionPass : Pass where
       -- Strip the generative attribute from the original command
       let strippedCmd := stripGenerativeAttrs cmdText
 
+      -- Extract any (attr := ...) from the generative attribute to add to generated decls
+      let generatedAttrs := match findAttrBlockRange cmdText with
+        | some (startPos, endPos) =>
+          let attrBlock := String.Pos.Raw.extract cmdText ⟨startPos⟩ ⟨endPos⟩
+          extractAttrsFromBlock attrBlock
+        | none => none
+
       -- Pretty-print the generated constants
       let mut generatedDecls : Array String := #[]
       for name in generatedConstants do
-        let declStr? ← runMetaM step.after ctx.fileName (ppConstantDecl step.after name)
+        let declStr? ← runMetaM step.after ctx.fileName (ppConstantDecl step.after name generatedAttrs)
         if let some declStr := declStr? then
           generatedDecls := generatedDecls.push declStr
 

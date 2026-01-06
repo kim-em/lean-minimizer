@@ -3,6 +3,11 @@ Mock @[to_dual] attribute for testing.
 
 This creates a copy of the declaration with a prime suffix.
 For example: @[to_dual] def foo := 42  creates  def foo' := 42
+
+Also supports (attr := X) syntax to apply attribute X to both declarations.
+For example: @[to_dual (attr := simp)] theorem foo := rfl  applies @[simp] to both foo and foo'
+(Note: This mock doesn't actually apply the inner attribute - it just supports the syntax
+for testing the attribute expansion pass.)
 -/
 import Lean
 
@@ -39,6 +44,9 @@ def copyConstant (src tgt : Name) : CoreM Unit := do
 
   addAndCompile decl
 
+/-- Syntax for @[to_dual] attribute with optional (attr := ...) -/
+syntax (name := to_dual) "to_dual" ("(" "attr" ":=" ident ")")? : attr
+
 initialize registerBuiltinAttribute {
   name := `to_dual
   descr := "Mock to_dual: creates a primed copy of the declaration"
@@ -46,4 +54,6 @@ initialize registerBuiltinAttribute {
   add := fun src _stx _kind => do
     let tgt := appendPrime src
     copyConstant src tgt
+    -- Note: We don't actually apply the inner (attr := X) - this mock just
+    -- supports the syntax for testing the attribute expansion pass
 }
