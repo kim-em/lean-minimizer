@@ -70,6 +70,18 @@ lake exe minimize test.lean --resume
 
 The `--resume` flag checks if the output file (`test.out.lean`) exists and uses it as input instead of the original file.
 
+### Minimizing Panics
+
+If you're minimizing a test case that panics, use `#guard_panic` to catch the panic:
+
+```lean
+#guard_msgs in
+#guard_panic in
+some_command_that_panics
+```
+
+This allows the minimizer to verify the panic still occurs after each reduction step.
+
 ## How it works
 
 The tool runs a sequence of minimization passes:
