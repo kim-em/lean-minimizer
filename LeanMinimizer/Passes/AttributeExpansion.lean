@@ -170,14 +170,19 @@ def lastNameComponent (n : Name) : String := match n with
 
 /-! ## Pretty-printing declarations -/
 
-/-- Determine the declaration kind for a constant -/
+/-- Determine the declaration kind for a constant.
+    Preserves the actual declaration kind (theorem vs def) from the source. -/
 def getDeclKind (env : Environment) (info : ConstantInfo) : String :=
   -- Check if it's an instance (has @[instance] attribute)
   if instanceExtension.getState env |>.instanceNames.contains info.name then "instance"
-  -- Check if it's a theorem (Prop-valued)
-  else if info.type.isProp then "theorem"
-  -- Otherwise it's a def
-  else "def"
+  else match info with
+  -- Preserve actual declaration kind
+  | .thmInfo _ => "theorem"
+  | .defnInfo _ => "def"
+  | .axiomInfo _ => "axiom"
+  | .opaqueInfo _ => "opaque"
+  -- For other kinds (inductive, ctor, rec, quot), fall back to def
+  | _ => "def"
 
 /-- Pretty-print a constant as a declaration string.
     Uses _root_.FullName to avoid namespace issues. -/
