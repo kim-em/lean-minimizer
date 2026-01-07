@@ -237,6 +237,35 @@ def computeStablePositionRanges (commands : Array SubprocessCmdInfo)
 def isInStableRange (pos : Nat) (ranges : Array (Nat × Nat)) : Bool :=
   ranges.any fun (start, stop) => pos >= start && pos < stop
 
+/-- Find the topmost `section X` / `end X` pair in commands.
+    Returns (sectionName, endCommandIdx, nextCommandText) where:
+    - sectionName: the name of the section (e.g., "Mathlib.Foo")
+    - endCommandIdx: index of the `end X` command
+    - nextCommandText: text of the command after `end X` (used as temp marker)
+    Returns none if no complete section pair is found before markerIdx. -/
+def findTopmostSection (commands : Array SubprocessCmdInfo) (markerIdx : Nat) :
+    Option (String × Nat × Option String) := Id.run do
+  -- Find the first `section X` command
+  for i in [:min commands.size markerIdx] do
+    let cmd := commands[i]!
+    let text := cmd.stxRepr.trimAscii
+    if text.startsWith "section " then
+      -- Extract section name (everything after "section ")
+      let sectionName := (text.drop 7).takeWhile (· != '\n') |>.trimAscii |>.toString
+      if sectionName.isEmpty then continue
+      -- Find matching `end X`
+      let endText := s!"end {sectionName}"
+      for j in [i + 1:min commands.size markerIdx] do
+        let endCmd := commands[j]!
+        if endCmd.stxRepr.trimAscii.startsWith endText then
+          -- Found the matching end. Get text of next command if available.
+          let nextText := if j + 1 < commands.size && j + 1 < markerIdx then
+            some commands[j + 1]!.stxRepr
+          else
+            none
+          return some (sectionName, j, nextText)
+  return none
+
 /-- Create a MinState from PassContext, using pre-elaborated data.
     This avoids re-parsing the file. -/
 def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
@@ -275,11 +304,16 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
 
     The `completeSweepBudget` parameter (0.0 to 1.0) controls how much time is spent
     on "complete sweeps" that include stable sections. Default 0.20 means at most
-    20% of runtime is spent reprocessing stable sections. -/
+    20% of runtime is spent reprocessing stable sections.
+
+    When `initialTempMarker` is set (e.g., from --resume), processing starts with
+    that temp marker active, focusing work on the most recent section first. -/
 unsafe def runPasses (passes : Array Pass) (input : String)
     (fileName : String) (marker : String) (verbose : Bool)
     (outputFile : Option String := none) (fullRestarts : Bool := false)
-    (completeSweepBudget : Float := 0.20) : IO String := do
+    (completeSweepBudget : Float := 0.20)
+    (initialTempMarker : Option String := none)
+    (initialTempMarkerSearchAfter : Option String := none) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -289,12 +323,19 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
-  let mut tempMarker : Option String := none  -- Temporary marker for parsimonious restarts
-  let mut tempMarkerSearchAfter : Option String := none  -- "Search after" text for temp marker
+  -- Initialize temp marker from parameters (e.g., from --resume)
+  let mut tempMarker : Option String := initialTempMarker
+  let mut tempMarkerSearchAfter : Option String := initialTempMarkerSearchAfter
 
   -- Stable section tracking
   let mut stableSections : Std.HashSet String := {}  -- Sections that have been fully processed
-  let mut currentProcessingSection : Option String := none  -- Section currently being processed
+  -- If we have an initial temp marker, extract the section name for tracking
+  let mut currentProcessingSection : Option String := extractSectionName initialTempMarkerSearchAfter
+
+  -- Log initial temp marker if set
+  if verbose && initialTempMarker.isSome then
+    let sectionInfo := currentProcessingSection.map (s!" (section: {·})") |>.getD ""
+    IO.eprintln s!"  Starting with initial temp marker (from --resume){sectionInfo}"
 
   -- Time budget tracking for complete sweeps
   let mut totalRuntime : Nat := 0        -- Total milliseconds spent in passes
@@ -332,7 +373,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
       let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
-          stableSections isCompleteSweep
+          stableSections isCompleteSweep tempMarker tempMarkerSearchAfter
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data

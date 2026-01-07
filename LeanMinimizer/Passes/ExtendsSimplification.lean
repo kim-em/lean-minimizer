@@ -275,8 +275,15 @@ def extendsSimplificationPass : Pass where
   cliFlag := "extends"
   needsSubprocess := true
   run := fun ctx => do
+    -- Compute effective marker: use temp marker index if available
+    let effectiveMarkerIdx := match ctx.tempMarkerIdx with
+      | some tempIdx => min ctx.markerIdx tempIdx
+      | none => ctx.markerIdx
+
     if ctx.verbose then
       IO.eprintln s!"  Looking for structures with extends clauses..."
+      if ctx.tempMarkerIdx.isSome then
+        IO.eprintln s!"  (Parsimonious mode: processing up to index {effectiveMarkerIdx})"
 
     -- Compute stable indices to skip (if not in complete sweep mode)
     let stableIndices := if ctx.isCompleteSweep then
@@ -286,8 +293,8 @@ def extendsSimplificationPass : Pass where
 
     let mut failedKeys : Array String := #[]
 
-    -- Process structures from just before marker going upward
-    for i in (List.range ctx.markerIdx).reverse do
+    -- Process structures from just before effective marker going upward
+    for i in (List.range effectiveMarkerIdx).reverse do
       -- Skip indices in stable sections during unstable-only sweeps
       if stableIndices.contains i then
         continue

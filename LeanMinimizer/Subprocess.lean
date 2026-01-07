@@ -458,7 +458,9 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     (marker : String) (verbose : Bool)
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
-    (isCompleteSweep : Bool := true) : IO SubprocessPassResult := do
+    (isCompleteSweep : Bool := true)
+    (tempMarker : Option String := none)
+    (tempMarkerSearchAfter : Option String := none) : IO SubprocessPassResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
   -- Write failedChanges to a temp file if non-empty
@@ -473,6 +475,12 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     let stableArray := stableSections.toArray
     IO.FS.writeFile stableSectionsFile (toJson stableArray).compress
 
+  -- Write tempMarker info to a temp file if set
+  let tempMarkerFile := tempSource.toString ++ ".tempmarker"
+  if tempMarker.isSome then
+    let markerInfo : Array String := #[tempMarker.getD "", tempMarkerSearchAfter.getD ""]
+    IO.FS.writeFile tempMarkerFile (toJson markerInfo).compress
+
   let mut args := #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
   if verbose then
     args := args.push "--verbose"
@@ -482,6 +490,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     args := args ++ #["--stable-file", stableSectionsFile]
   if !isCompleteSweep then
     args := args.push "--unstable-only"
+  if tempMarker.isSome then
+    args := args ++ #["--temp-marker-file", tempMarkerFile]
 
   let child ← IO.Process.spawn {
     cmd := "lake"
@@ -499,6 +509,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     IO.FS.removeFile failedChangesFile
   if !stableSections.isEmpty then
     IO.FS.removeFile stableSectionsFile
+  if tempMarker.isSome then
+    IO.FS.removeFile tempMarkerFile
 
   if exitCode != 0 then
     throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"

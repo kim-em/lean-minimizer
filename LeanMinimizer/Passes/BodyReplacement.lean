@@ -137,8 +137,16 @@ def bodyReplacementPass : Pass where
   cliFlag := "body-replacement"
   needsSubprocess := true
   run := fun ctx => do
+    -- Compute effective marker: use temp marker index if available
+    let effectiveMarkerIdx := match ctx.tempMarkerIdx with
+      | some tempIdx => min ctx.markerIdx tempIdx
+      | none => ctx.markerIdx
+
     if ctx.verbose then
-      IO.eprintln s!"  Processing {ctx.markerIdx} commands for body replacement..."
+      IO.eprintln s!"  Processing {effectiveMarkerIdx} commands for body replacement..."
+      if ctx.tempMarkerIdx.isSome then
+        IO.eprintln s!"  (Parsimonious mode: processing up to index {effectiveMarkerIdx}, \
+          temp marker at {ctx.tempMarkerIdx.get!})"
 
     -- Compute stable indices to skip (if not in complete sweep mode)
     let stableIndices := if ctx.isCompleteSweep then
@@ -150,10 +158,10 @@ def bodyReplacementPass : Pass where
     let mut currentSource := ctx.source
     let mut anyChanges := false
 
-    -- Process declarations from just before marker going upward (high to low index).
+    -- Process declarations from just before effective marker going upward (high to low index).
     -- Since we process from high to low, modifications at high positions (later in file)
     -- don't affect positions at low indices (earlier in file), so no offset tracking needed.
-    for i in (List.range ctx.markerIdx).reverse do
+    for i in (List.range effectiveMarkerIdx).reverse do
       -- Skip indices in stable sections during unstable-only sweeps
       if stableIndices.contains i then
         continue

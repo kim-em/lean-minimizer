@@ -369,8 +369,15 @@ def attributeExpansionPass : Pass where
   cliFlag := "attr-expansion"
   needsSubprocess := true
   run := fun ctx => do
+    -- Compute effective marker: use temp marker index if available
+    let effectiveMarkerIdx := match ctx.tempMarkerIdx with
+      | some tempIdx => min ctx.markerIdx tempIdx
+      | none => ctx.markerIdx
+
     if ctx.verbose then
       IO.eprintln s!"  Looking for generative attributes..."
+      if ctx.tempMarkerIdx.isSome then
+        IO.eprintln s!"  (Parsimonious mode: processing up to index {effectiveMarkerIdx})"
 
     -- Compute stable indices to skip (if not in complete sweep mode)
     let stableIndices := if ctx.isCompleteSweep then
@@ -379,7 +386,7 @@ def attributeExpansionPass : Pass where
       computeStableIndices ctx.subprocessCommands ctx.stableSections
 
     -- Find the last command with a generative attribute
-    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx stableIndices
+    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps effectiveMarkerIdx stableIndices
       | do
         if ctx.verbose then
           IO.eprintln s!"  No generative attributes found"

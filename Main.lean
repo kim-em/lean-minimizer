@@ -51,7 +51,9 @@ unsafe def subprocessPassRegistry : Array (String × Pass) := #[
 private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : String) (verbose : Bool)
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
-    (isCompleteSweep : Bool := true) : IO Unit := do
+    (isCompleteSweep : Bool := true)
+    (tempMarker : Option String := none)
+    (tempMarkerSearchAfter : Option String := none) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -59,6 +61,13 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
   -- Find marker
   let some markerIdx := findMarkerIdxInSteps result.steps marker
     | throw <| IO.userError (markerNotFoundError marker)
+
+  -- Convert steps to subprocess command format for temp marker lookup
+  let subprocessCommands := result.steps.map (·.toSubprocessInfo)
+
+  -- Compute temp marker index if we have a temp marker
+  let tempMarkerIdx := tempMarker.bind fun tm =>
+    findTempMarkerIdxInSubprocess subprocessCommands tm tempMarkerSearchAfter
 
   -- Build PassContext with full elaboration data
   let ctx : PassContext := {
@@ -74,10 +83,12 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     imports := (extractImports result.header).map fun imp =>
       { moduleName := imp.moduleName.toString, isPublic := false, isMeta := false, isAll := false }
     steps := result.steps
-    subprocessCommands := result.steps.map (·.toSubprocessInfo)
+    subprocessCommands
     markerIdx
     outputFile := none
     failedChanges
+    tempMarker
+    tempMarkerIdx
     stableSections
     isCompleteSweep
   }
@@ -104,9 +115,12 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
 private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) (verbose : Bool)
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
-    (isCompleteSweep : Bool := true) : IO UInt32 := do
+    (isCompleteSweep : Bool := true)
+    (tempMarker : Option String := none)
+    (tempMarkerSearchAfter : Option String := none) : IO UInt32 := do
   try
     runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep
+        tempMarker tempMarkerSearchAfter
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -118,7 +132,8 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
 unsafe def handleRunPass (passName : String) (file : String) (marker : String) (verbose : Bool)
     (memoryFile : Option String := none)
     (stableFile : Option String := none)
-    (isCompleteSweep : Bool := true) : IO UInt32 := do
+    (isCompleteSweep : Bool := true)
+    (tempMarkerFile : Option String := none) : IO UInt32 := do
   initSearchPath (← findSysroot)
 
   -- Read failedChanges from memory file if provided
@@ -145,12 +160,33 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
   else
     pure {}
 
+  -- Read tempMarker info from file if provided
+  -- File format: JSON array [tempMarker, tempMarkerSearchAfter]
+  let (tempMarker, tempMarkerSearchAfter) ← if let some tmFile := tempMarkerFile then
+    let content ← IO.FS.readFile tmFile
+    match Json.parse content with
+    | .error _ => pure (none, none)
+    | .ok json =>
+      match fromJson? json with
+      | .error _ => pure (none, none)
+      | .ok (arr : Array String) =>
+        if arr.size >= 2 then
+          let tm := if arr[0]!.isEmpty then none else some arr[0]!
+          let tmsa := if arr[1]!.isEmpty then none else some arr[1]!
+          pure (tm, tmsa)
+        else
+          pure (none, none)
+  else
+    pure (none, none)
+
   -- Find the pass
   match subprocessPassRegistry.find? (·.1 == passName) with
   | none =>
     IO.eprintln s!"Unknown pass: {passName}"
     return 1
-  | some (_, pass) => runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep
+  | some (_, pass) =>
+    runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep
+      tempMarker tempMarkerSearchAfter
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -193,7 +229,8 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     |> (·.push clearMemoryPass)  -- Always run clear memory pass at the end
 
 /-- Parse --run-pass arguments flexibly (handles any order of optional flags) -/
-def parseRunPassArgs (args : List String) : Option (String × String × String × Bool × Option String × Option String × Bool) := do
+def parseRunPassArgs (args : List String) :
+    Option (String × String × String × Bool × Option String × Option String × Bool × Option String) := do
   match args with
   | "--run-pass" :: passName :: file :: rest =>
     let mut marker : Option String := none
@@ -201,6 +238,7 @@ def parseRunPassArgs (args : List String) : Option (String × String × String �
     let mut memoryFile : Option String := none
     let mut stableFile : Option String := none
     let mut isCompleteSweep := true
+    let mut tempMarkerFile : Option String := none
     let mut remaining := rest
     while !remaining.isEmpty do
       match remaining with
@@ -209,9 +247,10 @@ def parseRunPassArgs (args : List String) : Option (String × String × String �
       | "--memory-file" :: mf :: tail => memoryFile := some mf; remaining := tail
       | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
       | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
+      | "--temp-marker-file" :: tf :: tail => tempMarkerFile := some tf; remaining := tail
       | _ => remaining := []  -- Unknown arg, stop parsing
     let m ← marker
-    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep)
+    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep, tempMarkerFile)
   | _ => none
 
 /-- Entry point -/
@@ -223,9 +262,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   | ["--analyze", file] => return ← handleAnalyze file
   | _ =>
     -- Try to parse as --run-pass command
-    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep) :=
+    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep, tempMarkerFile) :=
         parseRunPassArgs args then
-      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep
+      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep tempMarkerFile
     else
       pure ()
 
@@ -259,10 +298,32 @@ unsafe def main (args : List String) : IO UInt32 := do
           pure parsedArgs.file
       else
         pure parsedArgs.file
+      let isResuming := parsedArgs.resume && (← System.FilePath.pathExists outputFile)
       let input ← IO.FS.readFile inputFile
+
+      -- When resuming, find the topmost section to focus on first
+      let mut initialTempMarker : Option String := none
+      let mut initialTempMarkerSearchAfter : Option String := none
+      if isResuming then do
+        -- Parse the file to find commands
+        let subprocessResult ← runAnalyzeSubprocess input inputFile
+        let some markerIdx := findMarkerIdxInSubprocessSteps subprocessResult.commands parsedArgs.marker
+          | throw <| IO.userError (markerNotFoundError parsedArgs.marker)
+        -- Find the topmost section
+        match findTopmostSection subprocessResult.commands markerIdx with
+        | some (sectionName, _endIdx, nextCmdText) =>
+          if parsedArgs.verbose then
+            IO.eprintln s!"  Found topmost section: {sectionName}"
+          -- Use the next command's text as temp marker, or fall back to end marker
+          initialTempMarker := some (nextCmdText.getD s!"end {sectionName}")
+          initialTempMarkerSearchAfter := some s!"end {sectionName}"
+        | none =>
+          if parsedArgs.verbose then
+            IO.eprintln s!"  No section found, processing entire file"
+
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile) parsedArgs.fullRestarts
-                     parsedArgs.completeSweepBudget
+                     parsedArgs.completeSweepBudget initialTempMarker initialTempMarkerSearchAfter
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>
