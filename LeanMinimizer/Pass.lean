@@ -359,11 +359,20 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         completeSweepTime.toFloat / totalRuntime.toFloat
       else 0.0
       isCompleteSweep := budgetUsed < completeSweepBudget || stableSections.isEmpty
-      if verbose && !stableSections.isEmpty then
-        let sweepType := if isCompleteSweep then "complete" else "unstable-only"
-        let pct := (budgetUsed * 100).toUInt32
-        let budgetPct := (completeSweepBudget * 100).toUInt32
-        IO.eprintln s!"  Starting {sweepType} sweep (budget: {pct}% / {budgetPct}%, stable sections: {stableSections.size})"
+      if verbose then
+        if stableSections.isEmpty then
+          IO.eprintln s!"  Starting sweep (no stable sections)"
+        else
+          let totalSec := totalRuntime.toFloat / 1000.0
+          let completeSec := completeSweepTime.toFloat / 1000.0
+          let pct := (budgetUsed * 100).toUInt32
+          let budgetPct := (completeSweepBudget * 100).toUInt32
+          if isCompleteSweep then
+            IO.eprintln s!"  Starting complete sweep: budget {pct}% < {budgetPct}% allows reprocessing stable sections"
+            IO.eprintln s!"    (complete: {completeSec}s, total: {totalSec}s, stable sections: {stableSections.size})"
+          else
+            IO.eprintln s!"  Starting unstable-only sweep: budget {pct}% >= {budgetPct}%, skipping {stableSections.size} stable sections"
+            IO.eprintln s!"    (complete: {completeSec}s, total: {totalSec}s)"
 
     if verbose then
       IO.eprintln s!"[Pass {passIdx}] Running: {pass.name}"

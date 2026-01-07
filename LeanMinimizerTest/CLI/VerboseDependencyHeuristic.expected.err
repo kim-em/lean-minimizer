@@ -1,3 +1,4 @@
+  Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
@@ -49,16 +50,19 @@
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Singleton Namespace Flattening
+[Pass 3] Running: Open Minimization
   No changes, moving to next pass
-[Pass 4] Running: Public Section Removal
+[Pass 4] Running: Singleton Namespace Flattening
   No changes, moving to next pass
-[Pass 5] Running: Text Substitution
+[Pass 5] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 6] Running: Text Substitution
   Running text substitution mini-passes...
     Comment removal: found 1 potential replacements
       Applied all 1 replacements at once
   Text substitution made changes, restarting
   Changes made, restarting from first pass
+  Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
@@ -86,29 +90,31 @@
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Singleton Namespace Flattening
+[Pass 3] Running: Open Minimization
   No changes, moving to next pass
-[Pass 4] Running: Public Section Removal
+[Pass 4] Running: Singleton Namespace Flattening
   No changes, moving to next pass
-[Pass 5] Running: Text Substitution
+[Pass 5] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 6] Running: Text Substitution
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 6] Running: Extends Simplification
+[Pass 7] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 7] Running: Attribute Expansion
+[Pass 8] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 8] Running: Import Minimization
+[Pass 9] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 9] Running: Import Inlining
+[Pass 10] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
-[Pass 10] Running: Clear Memory
+[Pass 11] Running: Clear Memory
   Memory is empty, no final sweep needed
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

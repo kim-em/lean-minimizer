@@ -1,3 +1,4 @@
+  Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
 Error: Marker pattern '#guard_msgs' not found in any command.
 

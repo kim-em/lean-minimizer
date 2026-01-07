@@ -1,3 +1,4 @@
+  Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
@@ -23,6 +24,7 @@
       Applied all 4 replacements at once
   Text substitution made changes, restarting
   Changes made, restarting from first pass
+  Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass

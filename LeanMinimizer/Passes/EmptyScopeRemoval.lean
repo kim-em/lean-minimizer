@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Kim Morrison
 -/
 import LeanMinimizer.Pass
+import LeanMinimizer.Basic
 
 /-!
 # Empty Scope Removal Pass
@@ -119,52 +120,80 @@ def reconstructSourceFromSteps (source : String) (headerEndPos : String.Pos.Raw)
 
   return result
 
-/-- Find and remove one empty scope pair (section/namespace immediately followed by matching end).
-    Returns the new list of steps and whether a removal was made. -/
-def removeOneEmptyScopePair (steps : Array CompilationStep) : Array CompilationStep × Bool := Id.run do
+/-- An empty scope pair: the indices and positions of the opening and closing commands. -/
+structure EmptyScopePair where
+  /-- Index of opening command (section/namespace) in the steps array -/
+  openIdx : Nat
+  /-- Index of closing command (end) in the steps array -/
+  closeIdx : Nat
+  /-- Start position of opening command (for memory key) -/
+  startPos : String.Pos.Raw
+  /-- End position of closing command -/
+  endPos : String.Pos.Raw
+  deriving Repr
+
+/-- Generate a memory key for an empty scope pair based on its position. -/
+def EmptyScopePair.memoryKey (pair : EmptyScopePair) : String :=
+  s!"empty-scope:{pair.startPos}"
+
+/-- Find all empty scope pairs in the steps array.
+    Returns pairs in order of appearance. -/
+def findAllEmptyScopePairs (steps : Array CompilationStep) : Array EmptyScopePair := Id.run do
+  let mut pairs : Array EmptyScopePair := #[]
   if steps.size < 2 then
-    return (steps, false)
+    return pairs
 
   for i in [:steps.size - 1] do
     if h1 : i < steps.size then
       if h2 : i + 1 < steps.size then
-        let stx1 := steps[i].stx
-        let stx2 := steps[i + 1].stx
+        let step1 := steps[i]
+        let step2 := steps[i + 1]
+        let stx1 := step1.stx
+        let stx2 := step2.stx
 
         -- Check for section X ... end X
         if let some sectionName := getSectionName? stx1 then
           if let some endName := getEndName? stx2 then
-            -- Anonymous section matches anonymous end, named section matches same-named end
             if sectionName == endName || (sectionName == Name.anonymous && endName == Name.anonymous) then
-              -- Found empty section pair, remove both (remove i+1 first, then i)
-              let newSteps := (steps.eraseIdx! (i + 1)).eraseIdx! i
-              return (newSteps, true)
+              pairs := pairs.push {
+                openIdx := i
+                closeIdx := i + 1
+                startPos := step1.startPos
+                endPos := step2.endPos
+              }
+              continue  -- Don't also check namespace
 
         -- Check for namespace X ... end X
         if let some nsName := getNamespaceName? stx1 then
           if let some endName := getEndName? stx2 then
             if nsName == endName then
-              -- Found empty namespace pair, remove both
-              let newSteps := (steps.eraseIdx! (i + 1)).eraseIdx! i
-              return (newSteps, true)
+              pairs := pairs.push {
+                openIdx := i
+                closeIdx := i + 1
+                startPos := step1.startPos
+                endPos := step2.endPos
+              }
 
-  return (steps, false)
+  return pairs
 
-/-- Repeatedly remove empty scope pairs until no more can be found. -/
-def removeAllEmptyScopePairs (steps : Array CompilationStep) : Array CompilationStep × Nat := Id.run do
-  let mut currentSteps := steps
-  let mut totalRemoved : Nat := 0
-  let mut changed := true
+/-- Remove specified pairs from steps array. Pairs must be non-overlapping.
+    Returns steps with the pairs removed. -/
+def removeEmptyScopePairs (steps : Array CompilationStep) (pairs : Array EmptyScopePair) :
+    Array CompilationStep := Id.run do
+  if pairs.isEmpty then return steps
 
-  while changed do
-    let (newSteps, removed) := removeOneEmptyScopePair currentSteps
-    if removed then
-      currentSteps := newSteps
-      totalRemoved := totalRemoved + 2  -- Each pair is 2 commands
-    else
-      changed := false
+  -- Collect all indices to remove
+  let mut indicesToRemove : Std.HashSet Nat := {}
+  for pair in pairs do
+    indicesToRemove := indicesToRemove.insert pair.openIdx
+    indicesToRemove := indicesToRemove.insert pair.closeIdx
 
-  return (currentSteps, totalRemoved)
+  -- Filter out the removed indices
+  let mut result : Array CompilationStep := #[]
+  for h : i in [:steps.size] do
+    if !indicesToRemove.contains i then
+      result := result.push steps[i]
+  return result
 
 /-- The empty scope removal pass.
 
@@ -172,7 +201,10 @@ def removeAllEmptyScopePairs (steps : Array CompilationStep) : Array Compilation
     Runs repeatedly to handle nested empty scopes.
 
     This is a cleanup pass that runs after deletion to remove scope commands that
-    are now empty after their contents were deleted. -/
+    are now empty after their contents were deleted.
+
+    Verifies compilation after removal because removing a namespace can break
+    `open` commands that reference it. -/
 unsafe def emptyScopeRemovalPass : Pass where
   name := "Empty Scope Removal"
   cliFlag := "empty-scope"
@@ -181,19 +213,69 @@ unsafe def emptyScopeRemovalPass : Pass where
     let stepsBeforeMarker := ctx.steps.filter (·.idx < ctx.markerIdx)
     let stepsFromMarker := ctx.steps.filter (·.idx ≥ ctx.markerIdx)
 
-    let (newStepsBeforeMarker, removed) := removeAllEmptyScopePairs stepsBeforeMarker
+    -- Find all empty scope pairs
+    let allPairs := findAllEmptyScopePairs stepsBeforeMarker
 
-    if removed == 0 then
+    -- Filter out pairs already known to fail
+    let pairsToTry := allPairs.filter fun pair =>
+      !ctx.failedChanges.contains pair.memoryKey
+
+    if pairsToTry.isEmpty then
       return { source := ctx.source, changed := false, action := .continue }
 
     if ctx.verbose then
-      IO.eprintln s!"  Removed {removed} empty scope commands ({removed / 2} pairs)"
+      IO.eprintln s!"  Found {pairsToTry.size} empty scope pairs to try"
 
-    -- Reconstruct source from remaining steps
-    let allNewSteps := newStepsBeforeMarker ++ stepsFromMarker
-    let newSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos allNewSteps
+    -- Try removing all pairs at once
+    let stepsWithAllRemoved := removeEmptyScopePairs stepsBeforeMarker pairsToTry
+    let allRemovedSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos
+        (stepsWithAllRemoved ++ stepsFromMarker)
+
+    if ← testCompilesSubprocess allRemovedSource ctx.fileName then
+      -- All removals succeeded
+      if ctx.verbose then
+        IO.eprintln s!"  Removed all {pairsToTry.size} pairs ({pairsToTry.size * 2} commands) at once"
+      return { source := allRemovedSource, changed := true, action := .repeat }
+
+    -- Batch removal failed - fall back to one-by-one
+    if ctx.verbose then
+      IO.eprintln s!"  Batch removal failed, trying one-by-one"
+
+    let mut currentSteps := stepsBeforeMarker
+    let mut anyChanged := false
+    let mut newFailedChanges : Array String := #[]
+
+    for pair in pairsToTry do
+      -- Need to re-find the pair in current steps since indices shift after removals
+      let currentPairs := findAllEmptyScopePairs currentSteps
+      -- Find by position matching
+      let matchingPair? := currentPairs.find? fun p => p.startPos == pair.startPos
+      let some currentPair := matchingPair? | continue
+
+      let stepsWithOneRemoved := removeEmptyScopePairs currentSteps #[currentPair]
+      let testSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos
+          (stepsWithOneRemoved ++ stepsFromMarker)
+
+      if ← testCompilesSubprocess testSource ctx.fileName then
+        if ctx.verbose then
+          IO.eprintln s!"    Removed pair at position {pair.startPos}"
+        currentSteps := stepsWithOneRemoved
+        anyChanged := true
+      else
+        if ctx.verbose then
+          IO.eprintln s!"    Failed to remove pair at position {pair.startPos}"
+        newFailedChanges := newFailedChanges.push pair.memoryKey
+
+    if !anyChanged then
+      return { source := ctx.source, changed := false, action := .continue,
+               newFailedChanges := newFailedChanges }
+
+    -- Reconstruct final source
+    let newSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos
+        (currentSteps ++ stepsFromMarker)
 
     -- Use .repeat to run again in case there are now newly-adjacent empty scopes
-    return { source := newSource, changed := true, action := .repeat }
+    return { source := newSource, changed := true, action := .repeat,
+             newFailedChanges := newFailedChanges }
 
 end LeanMinimizer
