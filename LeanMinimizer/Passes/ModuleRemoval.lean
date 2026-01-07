@@ -73,6 +73,12 @@ unsafe def moduleRemovalPass : Pass where
   name := "Module System Removal"
   cliFlag := "module-removal"
   run := fun ctx => do
+    -- Quick text check: if "module" doesn't appear at all, skip immediately
+    if !ctx.source.containsSubstr "module" then
+      if ctx.verbose then
+        IO.eprintln "  File does not use module system, skipping"
+      return { source := ctx.source, changed := false, action := .continue }
+
     -- Check if file uses module system
     -- Use the subprocess-provided flag if available, otherwise check syntax
     let hasModule := ctx.hasModule || headerHasModule ctx.header

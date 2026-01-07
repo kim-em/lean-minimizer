@@ -140,6 +140,12 @@ def bodyReplacementPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Processing {ctx.markerIdx} commands for body replacement..."
 
+    -- Compute stable indices to skip (if not in complete sweep mode)
+    let stableIndices := if ctx.isCompleteSweep then
+      {}
+    else
+      computeStableIndices ctx.subprocessCommands ctx.stableSections
+
     -- Track current source (mutated as we make replacements)
     let mut currentSource := ctx.source
     let mut anyChanges := false
@@ -148,6 +154,9 @@ def bodyReplacementPass : Pass where
     -- Since we process from high to low, modifications at high positions (later in file)
     -- don't affect positions at low indices (earlier in file), so no offset tracking needed.
     for i in (List.range ctx.markerIdx).reverse do
+      -- Skip indices in stable sections during unstable-only sweeps
+      if stableIndices.contains i then
+        continue
       let some step := ctx.steps[i]?
         | continue
 

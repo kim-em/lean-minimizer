@@ -307,10 +307,15 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
 
 /-! ## The pass -/
 
-/-- Find the last command index that has a generative attribute -/
-def findLastGenerativeAttrCmd (steps : Array CompilationStep) (markerIdx : Nat) : Option Nat := do
+/-- Find the last command index that has a generative attribute.
+    Skips stable indices during unstable-only sweeps. -/
+def findLastGenerativeAttrCmd (steps : Array CompilationStep) (markerIdx : Nat)
+    (stableIndices : Std.HashSet Nat) : Option Nat := do
   -- Search from marker-1 down to 0
   for i in (List.range markerIdx).reverse do
+    -- Skip stable indices
+    if stableIndices.contains i then
+      continue
     let some step := steps[i]?
       | continue
     let cmdText := step.stx.reprint.getD ""
@@ -367,8 +372,14 @@ def attributeExpansionPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Looking for generative attributes..."
 
+    -- Compute stable indices to skip (if not in complete sweep mode)
+    let stableIndices := if ctx.isCompleteSweep then
+      {}
+    else
+      computeStableIndices ctx.subprocessCommands ctx.stableSections
+
     -- Find the last command with a generative attribute
-    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx
+    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx stableIndices
       | do
         if ctx.verbose then
           IO.eprintln s!"  No generative attributes found"

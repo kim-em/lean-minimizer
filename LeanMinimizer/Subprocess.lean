@@ -456,7 +456,9 @@ def runAnalyzeSubprocess (source : String) (fileName : String) : IO SubprocessFr
     Only stdout is captured for the JSON result. -/
 def runPassSubprocess (passName : String) (source : String) (fileName : String)
     (marker : String) (verbose : Bool)
-    (failedChanges : Std.HashSet String := {}) : IO SubprocessPassResult := do
+    (failedChanges : Std.HashSet String := {})
+    (stableSections : Std.HashSet String := {})
+    (isCompleteSweep : Bool := true) : IO SubprocessPassResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
   -- Write failedChanges to a temp file if non-empty
@@ -465,11 +467,21 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     let failedArray := failedChanges.toArray
     IO.FS.writeFile failedChangesFile (toJson failedArray).compress
 
+  -- Write stableSections to a temp file if non-empty
+  let stableSectionsFile := tempSource.toString ++ ".stable"
+  if !stableSections.isEmpty then
+    let stableArray := stableSections.toArray
+    IO.FS.writeFile stableSectionsFile (toJson stableArray).compress
+
   let mut args := #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
   if verbose then
     args := args.push "--verbose"
   if !failedChanges.isEmpty then
     args := args ++ #["--memory-file", failedChangesFile]
+  if !stableSections.isEmpty then
+    args := args ++ #["--stable-file", stableSectionsFile]
+  if !isCompleteSweep then
+    args := args.push "--unstable-only"
 
   let child ← IO.Process.spawn {
     cmd := "lake"
@@ -485,6 +497,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
   IO.FS.removeFile tempSource
   if !failedChanges.isEmpty then
     IO.FS.removeFile failedChangesFile
+  if !stableSections.isEmpty then
+    IO.FS.removeFile stableSectionsFile
 
   if exitCode != 0 then
     throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"

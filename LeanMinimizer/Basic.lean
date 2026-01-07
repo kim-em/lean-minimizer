@@ -140,6 +140,8 @@ structure Args where
   resume : Bool := false
   /-- Disable parsimonious restarts (for debugging) -/
   fullRestarts : Bool := false
+  /-- Budget for complete sweeps as fraction of runtime (0.0-1.0, default 0.20) -/
+  completeSweepBudget : Float := 0.20
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -180,6 +182,16 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | "--resume" :: rest => go rest { acc with resume := true }
     | "--full-restarts" :: rest => go rest { acc with fullRestarts := true }
+    | "--complete-sweep-budget" :: value :: rest =>
+      -- Parse as percentage (0-100) and convert to fraction
+      match value.toNat? with
+      | some n =>
+        if n > 100 then
+          .error "--complete-sweep-budget must be between 0 and 100 (percentage)"
+        else
+          go rest { acc with completeSweepBudget := n.toFloat / 100.0 }
+      | none => .error s!"--complete-sweep-budget requires an integer percentage (0-100, got '{value}')"
+    | "--complete-sweep-budget" :: [] => .error "--complete-sweep-budget requires an argument"
     | arg :: rest =>
       if arg.startsWith "-" then
         .error s!"Unknown option: {arg}"
@@ -561,6 +573,78 @@ unsafe def ddmin (heuristic : SplitHeuristic) (state : MinState) (candidates : A
   -- are still included when testing compilation.
   let allIndices := Array.range state.markerIdx
   let finalKept ← ddminCore heuristic state candidates allIndices
+  -- Return only the candidates that were kept (filter out non-candidate indices like scopes)
+  return finalKept.filter (candidates.contains ·)
+
+/-- Simpler binary deletion algorithm for command deletion.
+    Unlike ddmin, this never tries removing the first half as an alternative.
+
+    Algorithm:
+    - Try deleting the second half (rounding up)
+    - If that works, continue on the first half
+    - If that didn't work and second half was a single declaration, continue on first half
+    - Otherwise, recurse: first on second half, then on first half -/
+unsafe def binaryDeleteCore (heuristic : SplitHeuristic) (state : MinState)
+    (candidates : Array Nat) (currentlyKept : Array Nat) : IO (Array Nat) := do
+  -- Base case: no candidates to try removing
+  if candidates.size == 0 then
+    return currentlyKept
+
+  if candidates.size == 1 then
+    -- Try removing this single command
+    let idx := candidates[0]!
+    let withoutThis := currentlyKept.filter (· != idx)
+    if state.verbose then
+      IO.eprintln s!"  Testing: try remove [{idx}]"
+    if (← testCompiles state withoutThis) then
+      if state.verbose then
+        IO.eprintln s!"    → Success: removed [{idx}]"
+      writeProgress state withoutThis
+      return withoutThis
+    if state.verbose then
+      IO.eprintln s!"    → Failed: must keep [{idx}]"
+    return currentlyKept
+
+  -- Use heuristic to split candidates (secondHalf rounds up)
+  let (firstHalf, secondHalf) ← heuristic state candidates
+
+  -- Try removing second half
+  let withoutSecond := currentlyKept.filter (!secondHalf.contains ·)
+  if state.verbose then
+    IO.eprintln s!"  Testing: try remove {secondHalf.toList} (keep {firstHalf.toList})"
+  if (← testCompiles state withoutSecond) then
+    if state.verbose then
+      IO.eprintln s!"    → Success: removed {secondHalf.toList}, continuing on {firstHalf.toList}"
+    writeProgress state withoutSecond
+    return ← binaryDeleteCore heuristic state firstHalf withoutSecond
+
+  -- Second half removal failed
+  if state.verbose then
+    IO.eprintln s!"    → Failed"
+
+  if secondHalf.size == 1 then
+    -- Single item can't be deleted, continue on first half only
+    if state.verbose then
+      IO.eprintln s!"    Single item in second half, continuing on first half"
+    return ← binaryDeleteCore heuristic state firstHalf currentlyKept
+  else
+    -- Recurse: first on second half, then on first half
+    if state.verbose then
+      IO.eprintln s!"    Recursing into second half, then first half"
+    let afterSecond ← binaryDeleteCore heuristic state secondHalf currentlyKept
+    return ← binaryDeleteCore heuristic state firstHalf afterSecond
+
+/-- Simpler binary deletion algorithm for command deletion.
+    Entry point that sets up initial state.
+
+    Returns: the indices that must be kept (subset of candidates) -/
+unsafe def binaryDelete (heuristic : SplitHeuristic) (state : MinState) (candidates : Array Nat) :
+    IO (Array Nat) := do
+  -- Start with ALL indices before marker as currently kept (not just candidates).
+  -- This ensures scope commands (section/namespace/end) that aren't in candidates
+  -- are still included when testing compilation.
+  let allIndices := Array.range state.markerIdx
+  let finalKept ← binaryDeleteCore heuristic state candidates allIndices
   -- Return only the candidates that were kept (filter out non-candidate indices like scopes)
   return finalKept.filter (candidates.contains ·)
 

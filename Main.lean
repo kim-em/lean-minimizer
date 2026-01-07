@@ -49,7 +49,9 @@ unsafe def subprocessPassRegistry : Array (String × Pass) := #[
 ]
 
 private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : String) (verbose : Bool)
-    (failedChanges : Std.HashSet String := {}) : IO Unit := do
+    (failedChanges : Std.HashSet String := {})
+    (stableSections : Std.HashSet String := {})
+    (isCompleteSweep : Bool := true) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -76,6 +78,8 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     markerIdx
     outputFile := none
     failedChanges
+    stableSections
+    isCompleteSweep
   }
 
   -- Run the pass
@@ -98,9 +102,11 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
   IO.println (toJson jsonResult).compress
 
 private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) (verbose : Bool)
-    (failedChanges : Std.HashSet String := {}) : IO UInt32 := do
+    (failedChanges : Std.HashSet String := {})
+    (stableSections : Std.HashSet String := {})
+    (isCompleteSweep : Bool := true) : IO UInt32 := do
   try
-    runPassInnerCore pass file marker verbose failedChanges
+    runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -110,7 +116,9 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
     This runs a specific pass with full elaboration data.
     Calls processHeader ONCE, runs the pass, outputs JSON result. -/
 unsafe def handleRunPass (passName : String) (file : String) (marker : String) (verbose : Bool)
-    (memoryFile : Option String := none) : IO UInt32 := do
+    (memoryFile : Option String := none)
+    (stableFile : Option String := none)
+    (isCompleteSweep : Bool := true) : IO UInt32 := do
   initSearchPath (← findSysroot)
 
   -- Read failedChanges from memory file if provided
@@ -125,12 +133,24 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
   else
     pure {}
 
+  -- Read stableSections from stable file if provided
+  let stableSections ← if let some stabFile := stableFile then
+    let content ← IO.FS.readFile stabFile
+    match Json.parse content with
+    | .error _ => pure ({} : Std.HashSet String)
+    | .ok json =>
+      match fromJson? json with
+      | .error _ => pure ({} : Std.HashSet String)
+      | .ok (arr : Array String) => pure (arr.foldl (init := {}) fun acc s => acc.insert s)
+  else
+    pure {}
+
   -- Find the pass
   match subprocessPassRegistry.find? (·.1 == passName) with
   | none =>
     IO.eprintln s!"Unknown pass: {passName}"
     return 1
-  | some (_, pass) => runPassInner pass file marker verbose failedChanges
+  | some (_, pass) => runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -172,6 +192,28 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     |> (if args.noImportInlining then id else (·.push importInliningPass))
     |> (·.push clearMemoryPass)  -- Always run clear memory pass at the end
 
+/-- Parse --run-pass arguments flexibly (handles any order of optional flags) -/
+def parseRunPassArgs (args : List String) : Option (String × String × String × Bool × Option String × Option String × Bool) := do
+  match args with
+  | "--run-pass" :: passName :: file :: rest =>
+    let mut marker : Option String := none
+    let mut verbose := false
+    let mut memoryFile : Option String := none
+    let mut stableFile : Option String := none
+    let mut isCompleteSweep := true
+    let mut remaining := rest
+    while !remaining.isEmpty do
+      match remaining with
+      | "--marker" :: m :: tail => marker := some m; remaining := tail
+      | "--verbose" :: tail => verbose := true; remaining := tail
+      | "--memory-file" :: mf :: tail => memoryFile := some mf; remaining := tail
+      | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
+      | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
+      | _ => remaining := []  -- Unknown arg, stop parsing
+    let m ← marker
+    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep)
+  | _ => none
+
 /-- Entry point -/
 unsafe def main (args : List String) : IO UInt32 := do
   -- Handle subprocess subcommands early (before normal arg parsing)
@@ -179,17 +221,13 @@ unsafe def main (args : List String) : IO UInt32 := do
   match args with
   | ["--header-info", file] => return ← handleHeaderInfo file
   | ["--analyze", file] => return ← handleAnalyze file
-  | ["--run-pass", passName, file, "--marker", marker] =>
-      return ← handleRunPass passName file marker false
-  | ["--run-pass", passName, file, "--marker", marker, "--verbose"] =>
-      return ← handleRunPass passName file marker true
-  | ["--run-pass", passName, file, "--marker", marker, "--memory-file", memFile] =>
-      return ← handleRunPass passName file marker false (some memFile)
-  | ["--run-pass", passName, file, "--marker", marker, "--verbose", "--memory-file", memFile] =>
-      return ← handleRunPass passName file marker true (some memFile)
-  | ["--run-pass", passName, file, "--marker", marker, "--memory-file", memFile, "--verbose"] =>
-      return ← handleRunPass passName file marker true (some memFile)
-  | _ => pure ()
+  | _ =>
+    -- Try to parse as --run-pass command
+    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep) :=
+        parseRunPassArgs args then
+      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep
+    else
+      pure ()
 
   initSearchPath (← findSysroot)
   match parseArgs args with
@@ -224,6 +262,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let input ← IO.FS.readFile inputFile
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile) parsedArgs.fullRestarts
+                     parsedArgs.completeSweepBudget
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>

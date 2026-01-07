@@ -2,49 +2,50 @@
   File does not use module system, skipping
   No changes, moving to next pass
 [Pass 1] Running: Command Deletion
-  Analyzing dependencies from pre-elaborated data...
-  Dependency analysis: 5 commands reachable from invariant
-  Pre-computed deps: 5 reachable, 5 likely removable
+  (allIndices: 10, frozenIndices: 0, originalIndices: 10)
   Testing: try remove [5, 6, 7, 8, 9] (keep [0, 1, 2, 3, 4])
-    → Success: removed [5, 6, 7, 8, 9], recursing on [0, 1, 2, 3, 4]
-  Pre-computed deps: 5 reachable, 0 likely removable
+    → Success: removed [5, 6, 7, 8, 9], continuing on [0, 1, 2, 3, 4]
   Testing: try remove [2, 3, 4] (keep [0, 1])
-    → Failed, trying: remove [0, 1] (keep [2, 3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 3 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [3, 4] (keep [2])
-    → Failed, trying: remove [2] (keep [3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [4] (keep [3])
-    → Failed, trying: remove [3] (keep [4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [2]
+    → Failed: must keep [2]
   Testing: try remove [1] (keep [0])
-    → Failed, trying: remove [0] (keep [1])
-    → Failed: both halves needed, recursing on each
-  Removed 5 of 10 commands (10 tests)
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Removed 5 of 10 candidate commands (9 tests)
   Changes made, repeating pass
 [Pass 1] Running: Command Deletion
-  Analyzing dependencies from pre-elaborated data...
-  Dependency analysis: 5 commands reachable from invariant
-  Pre-computed deps: 5 reachable, 0 likely removable
+  (allIndices: 5, frozenIndices: 0, originalIndices: 5)
   Testing: try remove [2, 3, 4] (keep [0, 1])
-    → Failed, trying: remove [0, 1] (keep [2, 3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 3 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [3, 4] (keep [2])
-    → Failed, trying: remove [2] (keep [3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [4] (keep [3])
-    → Failed, trying: remove [3] (keep [4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [2]
+    → Failed: must keep [2]
   Testing: try remove [1] (keep [0])
-    → Failed, trying: remove [0] (keep [1])
-    → Failed: both halves needed, recursing on each
-  Removed 0 of 5 commands (9 tests)
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Removed 0 of 5 candidate commands (8 tests)
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
@@ -62,25 +63,26 @@
   File does not use module system, skipping
   No changes, moving to next pass
 [Pass 1] Running: Command Deletion
-  Analyzing dependencies from pre-elaborated data...
-  Dependency analysis: 5 commands reachable from invariant
-  Pre-computed deps: 5 reachable, 0 likely removable
+  (allIndices: 5, frozenIndices: 0, originalIndices: 5)
   Testing: try remove [2, 3, 4] (keep [0, 1])
-    → Failed, trying: remove [0, 1] (keep [2, 3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 3 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [3, 4] (keep [2])
-    → Failed, trying: remove [2] (keep [3, 4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Recursing into second half, then first half
   Testing: try remove [4] (keep [3])
-    → Failed, trying: remove [3] (keep [4])
-    → Failed: both halves needed, recursing on each
-  Pre-computed deps: 2 reachable, 0 likely removable
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [2]
+    → Failed: must keep [2]
   Testing: try remove [1] (keep [0])
-    → Failed, trying: remove [0] (keep [1])
-    → Failed: both halves needed, recursing on each
-  Removed 0 of 5 commands (9 tests)
+    → Failed
+    Single item in second half, continuing on first half
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Removed 0 of 5 candidate commands (8 tests)
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass

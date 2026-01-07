@@ -579,6 +579,12 @@ def textSubstitutionPass : Pass where
     else
       source.utf8ByteSize  -- Fallback: allow whole file
 
+    -- Compute stable position ranges to skip (if not in complete sweep mode)
+    let stableRanges := if ctx.isCompleteSweep then
+      #[]
+    else
+      computeStablePositionRanges ctx.subprocessCommands ctx.stableSections
+
     for miniPass in miniPasses do
       let allReplacements := miniPass.findReplacements source
       -- Apply comment filter unless this pass removes comments
@@ -590,6 +596,8 @@ def textSubstitutionPass : Pass where
         allReplacements.filter fun r => !isInsideRanges r.startPos.byteIdx commentRanges
       -- Filter out replacements at or after the invariant section
       let replacements := replacements.filter fun r => r.startPos.byteIdx < markerPos
+      -- Filter out replacements in stable sections during unstable-only sweeps
+      let replacements := replacements.filter fun r => !isInStableRange r.startPos.byteIdx stableRanges
       if !replacements.isEmpty then
         if ctx.verbose then
           IO.eprintln s!"    {miniPass.name}: found {replacements.size} potential replacements"

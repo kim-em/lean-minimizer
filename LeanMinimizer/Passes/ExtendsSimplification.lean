@@ -278,10 +278,19 @@ def extendsSimplificationPass : Pass where
     if ctx.verbose then
       IO.eprintln s!"  Looking for structures with extends clauses..."
 
+    -- Compute stable indices to skip (if not in complete sweep mode)
+    let stableIndices := if ctx.isCompleteSweep then
+      {}
+    else
+      computeStableIndices ctx.subprocessCommands ctx.stableSections
+
     let mut failedKeys : Array String := #[]
 
     -- Process structures from just before marker going upward
     for i in (List.range ctx.markerIdx).reverse do
+      -- Skip indices in stable sections during unstable-only sweeps
+      if stableIndices.contains i then
+        continue
       let some step := ctx.steps[i]?
         | continue
 
