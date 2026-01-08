@@ -140,10 +140,14 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
   let failedChanges ← if let some memFile := memoryFile then
     let content ← IO.FS.readFile memFile
     match Json.parse content with
-    | .error _ => pure ({} : Std.HashSet String)
+    | .error err =>
+        IO.eprintln s!"Warning: Failed to parse memory file '{memFile}': {err}. Starting fresh."
+        pure ({} : Std.HashSet String)
     | .ok json =>
       match fromJson? json with
-      | .error _ => pure ({} : Std.HashSet String)
+      | .error err =>
+          IO.eprintln s!"Warning: Failed to decode memory file '{memFile}': {err}. Starting fresh."
+          pure ({} : Std.HashSet String)
       | .ok (arr : Array String) => pure (arr.foldl (init := {}) fun acc s => acc.insert s)
   else
     pure {}
@@ -152,10 +156,14 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
   let stableSections ← if let some stabFile := stableFile then
     let content ← IO.FS.readFile stabFile
     match Json.parse content with
-    | .error _ => pure ({} : Std.HashSet String)
+    | .error err =>
+        IO.eprintln s!"Warning: Failed to parse stable file '{stabFile}': {err}. Starting fresh."
+        pure ({} : Std.HashSet String)
     | .ok json =>
       match fromJson? json with
-      | .error _ => pure ({} : Std.HashSet String)
+      | .error err =>
+          IO.eprintln s!"Warning: Failed to decode stable file '{stabFile}': {err}. Starting fresh."
+          pure ({} : Std.HashSet String)
       | .ok (arr : Array String) => pure (arr.foldl (init := {}) fun acc s => acc.insert s)
   else
     pure {}
@@ -165,10 +173,14 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
   let (tempMarker, tempMarkerSearchAfter) ← if let some tmFile := tempMarkerFile then
     let content ← IO.FS.readFile tmFile
     match Json.parse content with
-    | .error _ => pure (none, none)
+    | .error err =>
+        IO.eprintln s!"Warning: Failed to parse temp marker file '{tmFile}': {err}. Ignoring."
+        pure (none, none)
     | .ok json =>
       match fromJson? json with
-      | .error _ => pure (none, none)
+      | .error err =>
+          IO.eprintln s!"Warning: Failed to decode temp marker file '{tmFile}': {err}. Ignoring."
+          pure (none, none)
       | .ok (arr : Array String) =>
         if arr.size >= 2 then
           let tm := if arr[0]!.isEmpty then none else some arr[0]!
@@ -212,7 +224,9 @@ unsafe def buildPassList (args : Args) : Array Pass :=
   if let some passName := args.onlyPass then
     match allPasses.find? (·.1 == passName) with
     | some (_, pass) => #[pass]
-    | none => #[]  -- Unknown pass name (shouldn't happen with proper arg parsing)
+    | none =>
+        let validNames := allPasses.map (·.1) |>.toList |> String.intercalate ", "
+        panic! s!"Unknown pass name: '{passName}'. Valid passes are: {validNames}"
   else
     -- Normal mode: build pass list based on --no-X flags
     #[]
@@ -250,7 +264,11 @@ def parseRunPassArgs (args : List String) :
       | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
       | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
       | "--temp-marker-file" :: tf :: tail => tempMarkerFile := some tf; remaining := tail
-      | _ => remaining := []  -- Unknown arg, stop parsing
+      | [] => remaining := []  -- Exit while loop
+      | unknown :: _ =>
+          -- Log warning for unexpected args (shouldn't happen with internal subprocess calls)
+          dbg_trace s!"Warning: Unknown --run-pass argument: {unknown}. Ignoring remaining args."
+          remaining := []
     let m ← marker
     return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep, tempMarkerFile)
   | _ => none

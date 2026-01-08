@@ -21,7 +21,9 @@ to find a minimal set of commands before the marker that are needed for the file
 to compile.
 -/
 
-/-- Check if `needle` is a substring of `haystack` -/
+/-- Check if `needle` is a substring of `haystack`.
+    Note: Lean's stdlib doesn't provide a substring search function as of v4.27,
+    so we implement our own using splitOn. -/
 def String.containsSubstr (haystack needle : String) : Bool :=
   -- Use splitOn: if needle is present, splitOn will return > 1 element
   needle.isEmpty || (haystack.splitOn needle).length > 1
@@ -29,6 +31,22 @@ def String.containsSubstr (haystack needle : String) : Bool :=
 namespace LeanMinimizer
 
 open Lean Elab Frontend Parser
+
+/-- Get the system temp directory in a cross-platform way.
+    Checks TMPDIR (Unix), TEMP, TMP (Windows) environment variables,
+    falling back to /tmp if none are set. -/
+def getTempDir : IO System.FilePath := do
+  -- Try Unix-style TMPDIR first
+  if let some dir ← IO.getEnv "TMPDIR" then
+    return System.FilePath.mk dir
+  -- Try Windows-style TEMP
+  if let some dir ← IO.getEnv "TEMP" then
+    return System.FilePath.mk dir
+  -- Try Windows-style TMP
+  if let some dir ← IO.getEnv "TMP" then
+    return System.FilePath.mk dir
+  -- Fall back to /tmp
+  return System.FilePath.mk "/tmp"
 
 /-- Help string for the command line interface -/
 def help : String := "Lean test case minimizer
@@ -275,6 +293,23 @@ def defaultSplitHeuristic : SplitHeuristic := fun _ candidates => do
   let n := candidates.size / 2
   return (candidates[:n].toArray, candidates[n:].toArray)
 
+/-! ## String Access Patterns
+
+This codebase uses two main patterns for string access:
+
+1. **`String.Pos.Raw.get`/`String.Pos.Raw.extract`**: For safe, position-aware character
+   and substring access. Use this for general character iteration and extraction.
+
+2. **Cached `toUTF8` byte array**: For byte-level scanning (e.g., detecting multi-byte
+   Unicode sequences). Cache the array once at function start to avoid repeated allocations:
+   ```
+   let bytes := source.toUTF8
+   let b := bytes[i]!
+   ```
+
+Prefer pattern 1 unless you specifically need byte-level access for UTF-8 sequence detection.
+-/
+
 /-- Get source text for a command from the original input (includes leading comments) -/
 def CmdInfo.getSource (cmd : CmdInfo) (input : String) : String :=
   String.Pos.Raw.extract input cmd.startPos cmd.endPos
@@ -418,7 +453,8 @@ def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
-  let tempFile := System.FilePath.mk s!"/tmp/.lean-minimize-{pid}-{baseName}"
+  let tempDir ← getTempDir
+  let tempFile := tempDir / s!".lean-minimize-{pid}-{baseName}"
   IO.FS.writeFile tempFile source
 
   -- Get environment variables for lean
@@ -432,24 +468,24 @@ def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
     ("PATH", path)
   ]
 
-  -- Run lean to check compilation
-  let result ← IO.Process.output {
-    cmd := "lean"
-    args := #[tempFile.toString]
-    env := env
-  }
-
-  -- Clean up temp file
-  IO.FS.removeFile tempFile
-
-  return result.exitCode == 0
+  -- Run lean to check compilation, with try/finally for cleanup
+  try
+    let result ← IO.Process.output {
+      cmd := "lean"
+      args := #[tempFile.toString]
+      env := env
+    }
+    return result.exitCode == 0
+  finally
+    try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Check if source compiles using subprocess, returning error output if it fails -/
 def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (Bool × String) := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
-  let tempFile := System.FilePath.mk s!"/tmp/.lean-minimize-{pid}-{baseName}"
+  let tempDir ← getTempDir
+  let tempFile := tempDir / s!".lean-minimize-{pid}-{baseName}"
   IO.FS.writeFile tempFile source
 
   -- Get environment variables for lean
@@ -463,20 +499,19 @@ def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (
     ("PATH", path)
   ]
 
-  -- Run lean to check compilation
-  let result ← IO.Process.output {
-    cmd := "lean"
-    args := #[tempFile.toString]
-    env := env
-  }
-
-  -- Clean up temp file
-  IO.FS.removeFile tempFile
-
-  let success := result.exitCode == 0
-  -- lean prints errors to stdout, so capture both
-  let errorOutput := if success then "" else (result.stdout ++ result.stderr)
-  return (success, errorOutput)
+  -- Run lean to check compilation, with try/finally for cleanup
+  try
+    let result ← IO.Process.output {
+      cmd := "lean"
+      args := #[tempFile.toString]
+      env := env
+    }
+    let success := result.exitCode == 0
+    -- lean prints errors to stdout, so capture both
+    let errorOutput := if success then "" else (result.stdout ++ result.stderr)
+    return (success, errorOutput)
+  finally
+    try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Check if reconstructed source compiles (using subprocess for memory isolation) -/
 def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do

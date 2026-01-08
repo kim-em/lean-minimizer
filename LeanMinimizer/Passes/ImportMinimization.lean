@@ -43,68 +43,13 @@ def SubprocessImportInfo.toImportInfo (info : SubprocessImportInfo) : ImportInfo
 def subprocessImportsToImportInfo (imports : Array SubprocessImportInfo) : Array ImportInfo :=
   imports.map (·.toImportInfo)
 
-/-- Check if the header uses the module system (has `module` keyword) -/
-def headerUsesModuleSystem (header : Syntax) : Bool :=
-  if header.getNumArgs > 0 then
-    let moduleOpt := header[0]!
-    !moduleOpt.isNone && !moduleOpt.isMissing
-  else
-    false
+/-- Alias for headerHasModule from Subprocess -/
+abbrev headerUsesModuleSystem := headerHasModule
 
-/-- Check if the header has prelude -/
-def headerHasPrelude (header : Syntax) : Bool :=
-  if header.getNumArgs > 1 then
-    let preludeOpt := header[1]!
-    !preludeOpt.isNone && !preludeOpt.isMissing
-  else
-    false
-
-/-- Check if syntax is a token with given value -/
-def isTokenWithVal (stx : Syntax) (val : String) : Bool :=
-  match stx with
-  | .atom _ v => v == val
-  | _ => false
-
-/-- Extract import information from import syntax.
-    Import syntax: `public? meta? import all? ident` -/
-def parseImportSyntax (importStx : Syntax) : Option ImportInfo := do
-  let mut isPublic := false
-  let mut isMeta := false
-  let mut isAll := false
-  let mut modName : Option Name := none
-
-  for i in [:importStx.getNumArgs] do
-    let child := importStx[i]!
-    -- Check for tokens
-    if isTokenWithVal child "public" then isPublic := true
-    else if isTokenWithVal child "meta" then isMeta := true
-    else if isTokenWithVal child "all" then isAll := true
-    else if isTokenWithVal child "import" then pure ()  -- skip the import keyword
-    else if child.isIdent then
-      modName := some child.getId
-    else if !child.isNone && !child.isMissing then
-      -- Check nested structure for optional modifiers or ident
-      for j in [:child.getNumArgs] do
-        let nested := child[j]!
-        if isTokenWithVal nested "public" then isPublic := true
-        else if isTokenWithVal nested "meta" then isMeta := true
-        else if isTokenWithVal nested "all" then isAll := true
-        else if nested.isIdent then
-          modName := some nested.getId
-
-  let name ← modName
-  return { moduleName := name, isPublic, isMeta, isAll }
-
-/-- Extract all imports from a header syntax -/
-def extractImports (header : Syntax) : Array ImportInfo := Id.run do
-  let mut result := #[]
-  if header.getNumArgs > 2 then
-    let imports := header[2]!
-    for i in [:imports.getNumArgs] do
-      let importStx := imports[i]!
-      if let some info := parseImportSyntax importStx then
-        result := result.push info
-  return result
+/-- Extract all imports from a header syntax.
+    Uses the shared implementation from Subprocess and converts to ImportInfo. -/
+def extractImports (header : Syntax) : Array ImportInfo :=
+  (extractImportsFromSyntax header).map SubprocessImportInfo.toImportInfo
 
 /-- Get imports from context, preferring subprocess data if available -/
 def getImportsFromContext (ctx : PassContext) : Array ImportInfo :=
@@ -218,9 +163,12 @@ partial def ddminImportsCore (state : ImportMinState)
   let n := candidates.size / 2
   let firstHalf := candidates[:n].toArray
   let secondHalf := candidates[n:].toArray
+  -- Convert to HashSet for O(1) lookups in filter
+  let firstHalfSet : Std.HashSet Nat := Std.HashSet.ofArray firstHalf
+  let secondHalfSet : Std.HashSet Nat := Std.HashSet.ofArray secondHalf
 
   -- End-biased: try removing second half (later imports) first
-  let withoutSecond := currentlyKept.filter (!secondHalf.contains ·)
+  let withoutSecond := currentlyKept.filter (!secondHalfSet.contains ·)
   if state.verbose then
     IO.eprintln s!"    ddmin: try remove {secondHalf.size} imports (keep {firstHalf.size})"
   if ← testImportsCompile state withoutSecond then
@@ -229,7 +177,7 @@ partial def ddminImportsCore (state : ImportMinState)
     return ← ddminImportsCore state firstHalf withoutSecond
 
   -- Try removing first half
-  let withoutFirst := currentlyKept.filter (!firstHalf.contains ·)
+  let withoutFirst := currentlyKept.filter (!firstHalfSet.contains ·)
   if state.verbose then
     IO.eprintln s!"      → Failed, try remove {firstHalf.size} imports (keep {secondHalf.size})"
   if ← testImportsCompile state withoutFirst then

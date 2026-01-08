@@ -16,33 +16,6 @@ namespace LeanMinimizer
 
 open Lean Elab Frontend Parser
 
-/-- Check if the header uses the module system (has `module` keyword) -/
-def headerHasModule (header : Syntax) : Bool :=
-  -- Header structure: optional(module) optional(prelude) many(import)
-  -- The first child is the optional module token
-  if header.getNumArgs > 0 then
-    let moduleOpt := header[0]!
-    -- Check if the optional module part is present (not null/missing)
-    !moduleOpt.isNone && !moduleOpt.isMissing
-  else
-    false
-
-/-- Extract the module name from an import syntax.
-    Import syntax: `public? meta? import all? ident trailingDot?` -/
-def getImportModuleName (importStx : Syntax) : Option Name := Id.run do
-  -- The import syntax has structure: optional public, optional meta, "import", optional all, ident, optional trailing
-  -- Search for the ident child (typically at index 4)
-  for i in [:importStx.getNumArgs] do
-    let child := importStx[i]!
-    if child.isIdent then
-      return some child.getId
-    -- Handle identWithPartialTrailingDot
-    if !child.isNone && child.getNumArgs > 0 then
-      let inner := child[0]!
-      if inner.isIdent then
-        return some inner.getId
-  return none
-
 /-- Reconstruct the header without `module` keyword and without import modifiers.
     Returns the new header string. -/
 def reconstructHeaderWithoutModule (header : Syntax) : String := Id.run do

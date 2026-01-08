@@ -355,14 +355,15 @@ def findTypeUniverseReplacements (source : String) : Array Replacement := Id.run
 /-- Find all occurrences of Unicode number type symbols -/
 def findUnicodeReplacements (source : String) : Array Replacement := Id.run do
   let mut result := #[]
-  let endPos := source.rawEndPos.byteIdx
+  let bytes := source.toUTF8  -- Cache byte array to avoid repeated conversions
+  let endPos := bytes.size
   let mut i := 0
   while i < endPos do
     -- ℕ is E2 84 95 in UTF-8
     if i + 2 < endPos then
-      let b0 := source.toUTF8[i]!
-      let b1 := source.toUTF8[i+1]!
-      let b2 := source.toUTF8[i+2]!
+      let b0 := bytes[i]!
+      let b1 := bytes[i+1]!
+      let b2 := bytes[i+2]!
       if b0 == 0xE2 && b1 == 0x84 then
         if b2 == 0x95 then  -- ℕ
           result := result.push { startPos := ⟨i⟩, endPos := ⟨i + 3⟩, replacement := "Nat" }

@@ -160,7 +160,8 @@ def replaceExtendsClause (source : String) (extendsRange : String.Pos.Raw × Str
     Note: Lean outputs errors to stdout, not stderr. -/
 def runLeanOnSource (source : String) (fileName : String) : IO (UInt32 × String) := do
   let rand ← IO.rand 0 999999999
-  let tempFile := System.FilePath.mk s!"/tmp/lean-minimize-extends-{← IO.monoNanosNow}-{rand}.lean"
+  let tempDir ← getTempDir
+  let tempFile := tempDir / s!"lean-minimize-extends-{← IO.monoNanosNow}-{rand}.lean"
   IO.FS.writeFile tempFile source
 
   let leanPath ← IO.getEnv "LEAN_PATH"
@@ -174,16 +175,18 @@ def runLeanOnSource (source : String) (fileName : String) : IO (UInt32 × String
   ]
 
   let cwd := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
-  let result ← IO.Process.output {
-    cmd := "lean"
-    args := #[tempFile.toString]
-    env := env
-    cwd := some cwd
-  }
-
-  IO.FS.removeFile tempFile
-  -- Lean outputs errors to stdout, not stderr
-  return (result.exitCode, result.stdout)
+  -- Run lean with try/finally for cleanup
+  try
+    let result ← IO.Process.output {
+      cmd := "lean"
+      args := #[tempFile.toString]
+      env := env
+      cwd := some cwd
+    }
+    -- Lean outputs errors to stdout, not stderr
+    return (result.exitCode, result.stdout)
+  finally
+    try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Test if source compiles using subprocess for memory isolation -/
 def testSourceCompilesForExtends (source : String) (fileName : String) : IO Bool := do
@@ -193,7 +196,8 @@ def testSourceCompilesForExtends (source : String) (fileName : String) : IO Bool
 /-- Extract error line numbers from lean stderr output.
     Error format: filename:line:col: error: ... -/
 def extractErrorLineNumbers (stderr : String) : Array Nat := Id.run do
-  let mut result := #[]
+  -- Use HashSet for O(1) duplicate checking instead of O(n) Array.contains
+  let mut resultSet : Std.HashSet Nat := {}
   for line in stderr.splitOn "\n" do
     -- Look for pattern like "filename:42:0: error:"
     if line.containsSubstr ": error:" then
@@ -201,9 +205,8 @@ def extractErrorLineNumbers (stderr : String) : Array Nat := Id.run do
       let parts := line.splitOn ":"
       if parts.length >= 2 then
         if let some lineNum := parts[1]?.bind (·.trimAscii.toString.toNat?) then
-          if !result.contains lineNum then
-            result := result.push lineNum
-  return result
+          resultSet := resultSet.insert lineNum
+  return resultSet.toArray
 
 /-- Check if a line is a sorry-field assignment (like "foo := sorry") -/
 def isSorryFieldLine (line : String) : Bool :=

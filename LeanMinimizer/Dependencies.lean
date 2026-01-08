@@ -225,13 +225,13 @@ def findInvariantDependencies (stepsBeforeMarker : Array CompilationStep)
     invariantRefs := invariantRefs.union (getReferencedConstants step)
 
   -- Find which commands before marker define constants used by invariant
-  let mut result : Array Nat := #[]
+  -- Use HashSet for O(1) duplicate checking instead of O(n) Array.contains
+  let mut resultSet : Std.HashSet Nat := {}
   for name in invariantRefs do
     if let some idx := constantToCmd[name]? then
-      if !result.contains idx then
-        result := result.push idx
+      resultSet := resultSet.insert idx
 
-  return result
+  return resultSet.toArray
 
 /-! ## Declaration body detection -/
 

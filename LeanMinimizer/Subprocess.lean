@@ -143,13 +143,13 @@ def findInvariantDependenciesFromSubprocess
       invariantRefs := invariantRefs.insert name.toName
 
   -- Find which commands before marker define constants used by invariant
-  let mut result : Array Nat := #[]
+  -- Use HashSet for O(1) duplicate checking instead of O(n) Array.contains
+  let mut resultSet : Std.HashSet Nat := {}
   for name in invariantRefs do
     if let some idx := constantToCmd[name]? then
-      if !result.contains idx then
-        result := result.push idx
+      resultSet := resultSet.insert idx
 
-  return result
+  return resultSet.toArray
 
 /-- Convert a CompilationStep to serializable SubprocessCmdInfo -/
 def CompilationStep.toSubprocessInfo (step : CompilationStep) : SubprocessCmdInfo :=
@@ -165,8 +165,9 @@ def CompilationStep.toSubprocessInfo (step : CompilationStep) : SubprocessCmdInf
     declBodyEndPos := bodyRange.map (·.2.byteIdx)
   }
 
-/-- Check if the header uses the module system (has `module` keyword) -/
-private def headerHasModuleImpl (header : Syntax) : Bool :=
+/-- Check if the header uses the module system (has `module` keyword).
+    Shared implementation used by multiple passes. -/
+def headerHasModule (header : Syntax) : Bool :=
   -- Header structure: optional(module) optional(prelude) many(import)
   -- The first child is the optional module token
   if header.getNumArgs > 0 then
@@ -177,8 +178,9 @@ private def headerHasModuleImpl (header : Syntax) : Bool :=
     false
 
 /-- Extract the module name from an import syntax.
-    Import syntax: `public? meta? import all? ident trailingDot?` -/
-private def getImportModuleNameImpl (importStx : Syntax) : Option Name := Id.run do
+    Import syntax: `public? meta? import all? ident trailingDot?`
+    Shared implementation used by multiple passes. -/
+def getImportModuleName (importStx : Syntax) : Option Name := Id.run do
   for i in [:importStx.getNumArgs] do
     let child := importStx[i]!
     if child.isIdent then
@@ -190,22 +192,24 @@ private def getImportModuleNameImpl (importStx : Syntax) : Option Name := Id.run
         return some inner.getId
   return none
 
-/-- Check if the header has `prelude` -/
-private def headerHasPreludeImpl (header : Syntax) : Bool :=
+/-- Check if the header has `prelude`.
+    Shared implementation used by multiple passes. -/
+def headerHasPrelude (header : Syntax) : Bool :=
   if header.getNumArgs > 1 then
     let preludeOpt := header[1]!
     !preludeOpt.isNone && !preludeOpt.isMissing
   else
     false
 
-/-- Check if syntax is a token with given value -/
-private def isTokenWithValImpl (stx : Syntax) (val : String) : Bool :=
+/-- Check if syntax is a token with the given value. Used for import parsing. -/
+def isTokenWithVal (stx : Syntax) (val : String) : Bool :=
   match stx with
   | .atom _ v => v == val
   | _ => false
 
-/-- Extract import info from import syntax -/
-private def parseImportSyntaxImpl (importStx : Syntax) : Option SubprocessImportInfo := do
+/-- Extract import info from import syntax.
+    Shared implementation used by both subprocess and in-process parsing. -/
+def parseImportSyntax (importStx : Syntax) : Option SubprocessImportInfo := do
   let mut isPublic := false
   let mut isMeta := false
   let mut isAll := false
@@ -213,32 +217,33 @@ private def parseImportSyntaxImpl (importStx : Syntax) : Option SubprocessImport
 
   for i in [:importStx.getNumArgs] do
     let child := importStx[i]!
-    if isTokenWithValImpl child "public" then isPublic := true
-    else if isTokenWithValImpl child "meta" then isMeta := true
-    else if isTokenWithValImpl child "all" then isAll := true
-    else if isTokenWithValImpl child "import" then pure ()
+    if isTokenWithVal child "public" then isPublic := true
+    else if isTokenWithVal child "meta" then isMeta := true
+    else if isTokenWithVal child "all" then isAll := true
+    else if isTokenWithVal child "import" then pure ()
     else if child.isIdent then
       modName := some child.getId
     else if !child.isNone && !child.isMissing then
       for j in [:child.getNumArgs] do
         let nested := child[j]!
-        if isTokenWithValImpl nested "public" then isPublic := true
-        else if isTokenWithValImpl nested "meta" then isMeta := true
-        else if isTokenWithValImpl nested "all" then isAll := true
+        if isTokenWithVal nested "public" then isPublic := true
+        else if isTokenWithVal nested "meta" then isMeta := true
+        else if isTokenWithVal nested "all" then isAll := true
         else if nested.isIdent then
           modName := some nested.getId
 
   let name ← modName
   return { moduleName := name.toString, isPublic, isMeta, isAll }
 
-/-- Extract all imports from a header syntax -/
-private def extractImportsImpl (header : Syntax) : Array SubprocessImportInfo := Id.run do
+/-- Extract all imports from a header syntax.
+    Shared implementation used by both subprocess and in-process parsing. -/
+def extractImportsFromSyntax (header : Syntax) : Array SubprocessImportInfo := Id.run do
   let mut result := #[]
   if header.getNumArgs > 2 then
     let imports := header[2]!
     for i in [:imports.getNumArgs] do
       let importStx := imports[i]!
-      if let some info := parseImportSyntaxImpl importStx then
+      if let some info := parseImportSyntax importStx then
         result := result.push info
   return result
 
@@ -258,7 +263,7 @@ private def reconstructHeaderWithoutModuleImpl (header : Syntax) : String := Id.
     let imports := header[2]!
     for i in [:imports.getNumArgs] do
       let importStx := imports[i]!
-      if let some modName := getImportModuleNameImpl importStx then
+      if let some modName := getImportModuleName importStx then
         result := result ++ s!"import {modName}\n"
 
   return result
@@ -266,11 +271,11 @@ private def reconstructHeaderWithoutModuleImpl (header : Syntax) : String := Id.
 /-- Convert a FrontendResult to serializable SubprocessFrontendResult -/
 def FrontendResult.toSubprocessResult (result : FrontendResult) : SubprocessFrontendResult :=
   { headerEndPos := result.headerEndPos.byteIdx
-    hasModule := headerHasModuleImpl result.header
-    hasPrelude := headerHasPreludeImpl result.header
+    hasModule := headerHasModule result.header
+    hasPrelude := headerHasPrelude result.header
     headerRepr := result.header.reprint.getD ""
     headerWithoutModule := reconstructHeaderWithoutModuleImpl result.header
-    imports := extractImportsImpl result.header
+    imports := extractImportsFromSyntax result.header
     commands := result.steps.map (·.toSubprocessInfo)
   }
 
@@ -349,11 +354,11 @@ def parseHeaderAndOutputJson (source : String) (fileName : String) : IO Unit := 
 
   let headerResult : SubprocessHeaderResult := {
     headerEndPos := parserState.pos.byteIdx
-    hasModule := headerHasModuleImpl header
-    hasPrelude := headerHasPreludeImpl header
+    hasModule := headerHasModule header
+    hasPrelude := headerHasPrelude header
     headerRepr := (header : Syntax).reprint.getD ""
     headerWithoutModule := reconstructHeaderWithoutModuleImpl header
-    imports := extractImportsImpl header
+    imports := extractImportsFromSyntax header
   }
   IO.println (toJson headerResult).compress
 
@@ -407,46 +412,50 @@ private def setupSubprocessExecution (source : String) (fileName : String) :
 def runHeaderInfoSubprocess (source : String) (fileName : String) : IO SubprocessHeaderResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
-  let result ← IO.Process.output {
-    cmd := "lake"
-    args := #["env", "minimize", "--header-info", tempSource.toString]
-    cwd := some projectRoot
-  }
+  -- Use try/finally to ensure temp file cleanup
+  try
+    let result ← IO.Process.output {
+      cmd := "lake"
+      args := #["env", "minimize", "--header-info", tempSource.toString]
+      cwd := some projectRoot
+    }
 
-  IO.FS.removeFile tempSource
+    if result.exitCode != 0 then
+      throw <| IO.userError s!"Header info subprocess failed:\n{result.stderr}"
 
-  if result.exitCode != 0 then
-    throw <| IO.userError s!"Header info subprocess failed:\n{result.stderr}"
-
-  match Json.parse result.stdout with
-  | .error err => throw <| IO.userError s!"Failed to parse header info output: {err}\nOutput: {result.stdout}"
-  | .ok json =>
-    match fromJson? json with
-    | .error err => throw <| IO.userError s!"Failed to decode header info result: {err}"
-    | .ok (result : SubprocessHeaderResult) => return result
+    match Json.parse result.stdout with
+    | .error err => throw <| IO.userError s!"Failed to parse header info output: {err}\nOutput: {result.stdout}"
+    | .ok json =>
+      match fromJson? json with
+      | .error err => throw <| IO.userError s!"Failed to decode header info result: {err}"
+      | .ok (result : SubprocessHeaderResult) => return result
+  finally
+    try IO.FS.removeFile tempSource catch _ => pure ()
 
 /-- Run `lean-minimizer --analyze` in a subprocess to fully elaborate the file.
     This spawns a fresh process where processHeader is called exactly once. -/
 def runAnalyzeSubprocess (source : String) (fileName : String) : IO SubprocessFrontendResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
-  let result ← IO.Process.output {
-    cmd := "lake"
-    args := #["env", "minimize", "--analyze", tempSource.toString]
-    cwd := some projectRoot
-  }
+  -- Use try/finally to ensure temp file cleanup
+  try
+    let result ← IO.Process.output {
+      cmd := "lake"
+      args := #["env", "minimize", "--analyze", tempSource.toString]
+      cwd := some projectRoot
+    }
 
-  IO.FS.removeFile tempSource
+    if result.exitCode != 0 then
+      throw <| IO.userError s!"Analyze subprocess failed:\n{result.stderr}"
 
-  if result.exitCode != 0 then
-    throw <| IO.userError s!"Analyze subprocess failed:\n{result.stderr}"
-
-  match Json.parse result.stdout with
-  | .error err => throw <| IO.userError s!"Failed to parse analyze output: {err}\nOutput: {result.stdout}"
-  | .ok json =>
-    match fromJson? json with
-    | .error err => throw <| IO.userError s!"Failed to decode analyze result: {err}"
-    | .ok (result : SubprocessFrontendResult) => return result
+    match Json.parse result.stdout with
+    | .error err => throw <| IO.userError s!"Failed to parse analyze output: {err}\nOutput: {result.stdout}"
+    | .ok json =>
+      match fromJson? json with
+      | .error err => throw <| IO.userError s!"Failed to decode analyze result: {err}"
+      | .ok (result : SubprocessFrontendResult) => return result
+  finally
+    try IO.FS.removeFile tempSource catch _ => pure ()
 
 /-- Run a pass in a subprocess with full elaboration.
     This spawns a fresh process where processHeader is called exactly once,
@@ -493,6 +502,16 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
   if tempMarker.isSome then
     args := args ++ #["--temp-marker-file", tempMarkerFile]
 
+  -- Helper to clean up temp files (silently ignores errors)
+  let cleanup : IO Unit := do
+    try IO.FS.removeFile tempSource catch _ => pure ()
+    if !failedChanges.isEmpty then
+      try IO.FS.removeFile failedChangesFile catch _ => pure ()
+    if !stableSections.isEmpty then
+      try IO.FS.removeFile stableSectionsFile catch _ => pure ()
+    if tempMarker.isSome then
+      try IO.FS.removeFile tempMarkerFile catch _ => pure ()
+
   let child ← IO.Process.spawn {
     cmd := "lake"
     args
@@ -501,25 +520,21 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     stderr := .inherit
   }
 
-  let stdout ← child.stdout.readToEnd
-  let exitCode ← child.wait
+  -- Use try/finally to ensure cleanup runs even if subprocess fails
+  try
+    let stdout ← child.stdout.readToEnd
+    let exitCode ← child.wait
 
-  IO.FS.removeFile tempSource
-  if !failedChanges.isEmpty then
-    IO.FS.removeFile failedChangesFile
-  if !stableSections.isEmpty then
-    IO.FS.removeFile stableSectionsFile
-  if tempMarker.isSome then
-    IO.FS.removeFile tempMarkerFile
+    if exitCode != 0 then
+      throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"
 
-  if exitCode != 0 then
-    throw <| IO.userError s!"Run-pass subprocess failed with exit code {exitCode}"
-
-  match Json.parse stdout with
-  | .error err => throw <| IO.userError s!"Failed to parse run-pass output: {err}\nOutput: {stdout}"
-  | .ok json =>
-    match fromJson? json with
-    | .error err => throw <| IO.userError s!"Failed to decode run-pass result: {err}"
-    | .ok (result : SubprocessPassResult) => return result
+    match Json.parse stdout with
+    | .error err => throw <| IO.userError s!"Failed to parse run-pass output: {err}\nOutput: {stdout}"
+    | .ok json =>
+      match fromJson? json with
+      | .error err => throw <| IO.userError s!"Failed to decode run-pass result: {err}"
+      | .ok (result : SubprocessPassResult) => return result
+  finally
+    cleanup
 
 end LeanMinimizer

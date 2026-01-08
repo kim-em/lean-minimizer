@@ -14,6 +14,16 @@ Each pass can declare what should happen after it makes progress:
 - `restart`: Go back to the first pass
 - `repeat`: Run the same pass again
 - `continue`: Move to the next pass
+
+## Verbose Output Convention
+
+When `verbose` is enabled, use consistent indentation for log messages:
+- No indent: Warnings, errors, and top-level status
+- 2 spaces: Pass-level operations (e.g., `"  Testing:..."`, `"  Analyzing..."`)
+- 4 spaces: Sub-operations within a pass (e.g., `"    ddmin:..."`, `"    Found..."`)
+- 6 spaces: Results and outcomes (e.g., `"      → Success"`, `"      Removed..."`)
+
+Use `→` prefix for outcomes/results. Keep messages concise for readability.
 -/
 
 namespace LeanMinimizer
@@ -339,7 +349,10 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
   let mut source := input
   let mut passIdx : Nat := 0
-  let maxIterations := 1000  -- Safety limit
+  -- Safety limit to prevent infinite loops. In practice, minimization converges in
+  -- far fewer iterations (typically < 100). If this limit is hit, it likely indicates
+  -- a bug in pass logic (e.g., a pass that always reports changes but doesn't modify source).
+  let maxIterations := 1000
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
