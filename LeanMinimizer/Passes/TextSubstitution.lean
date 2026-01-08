@@ -460,6 +460,23 @@ def findAttributePriorityReplacements (source : String) : Array Replacement := I
       i := i + 1
   return result
 
+/-- Find lines starting with `__ :=` (underscore field assignments).
+    These can often be deleted when the field value doesn't matter. -/
+def findUnderscoreFieldReplacements (source : String) : Array Replacement := Id.run do
+  let mut result := #[]
+  let lines := source.splitOn "\n"
+  let mut pos := 0
+  for line in lines do
+    let trimmed := line.trimAsciiStart.toString
+    -- Check if line starts with __ :=
+    if trimmed.startsWith "__ :=" then
+      -- Delete the entire line including the newline
+      let lineEnd := pos + line.utf8ByteSize
+      let endWithNewline := if lineEnd < source.utf8ByteSize then lineEnd + 1 else lineEnd
+      result := result.push { startPos := ⟨pos⟩, endPos := ⟨endWithNewline⟩, replacement := "" }
+    pos := pos + line.utf8ByteSize + 1  -- +1 for newline
+  return result
+
 /-- Find instance priority specifications: (priority := ...) -/
 def findInstancePriorityReplacements (source : String) : Array Replacement := Id.run do
   let mut result := #[]
@@ -500,7 +517,8 @@ def miniPasses : Array MiniPass := #[
   { name := "Attribute priorities", findReplacements := findAttributePriorityReplacements },
   { name := "Instance priorities", findReplacements := findInstancePriorityReplacements },
   { name := "Attribute removal", findReplacements := findAttributeReplacements },
-  { name := "Modifier removal", findReplacements := findModifierReplacements }
+  { name := "Modifier removal", findReplacements := findModifierReplacements },
+  { name := "Underscore field removal", findReplacements := findUnderscoreFieldReplacements }
 ]
 
 /-- Compute a memory key for a replacement -/
