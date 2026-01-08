@@ -468,8 +468,7 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
-    (tempMarker : Option String := none)
-    (tempMarkerSearchAfter : Option String := none) : IO SubprocessPassResult := do
+    (stableBoundaryIdx : Option Nat := none) : IO SubprocessPassResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
   -- Write failedChanges to a temp file if non-empty
@@ -484,12 +483,6 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     let stableArray := stableSections.toArray
     IO.FS.writeFile stableSectionsFile (toJson stableArray).compress
 
-  -- Write tempMarker info to a temp file if set
-  let tempMarkerFile := tempSource.toString ++ ".tempmarker"
-  if tempMarker.isSome then
-    let markerInfo : Array String := #[tempMarker.getD "", tempMarkerSearchAfter.getD ""]
-    IO.FS.writeFile tempMarkerFile (toJson markerInfo).compress
-
   let mut args := #["env", "minimize", "--run-pass", passName, tempSource.toString, "--marker", marker]
   if verbose then
     args := args.push "--verbose"
@@ -499,8 +492,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     args := args ++ #["--stable-file", stableSectionsFile]
   if !isCompleteSweep then
     args := args.push "--unstable-only"
-  if tempMarker.isSome then
-    args := args ++ #["--temp-marker-file", tempMarkerFile]
+  if let some boundary := stableBoundaryIdx then
+    args := args ++ #["--stable-boundary", toString boundary]
 
   -- Helper to clean up temp files (silently ignores errors)
   let cleanup : IO Unit := do
@@ -509,8 +502,6 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
       try IO.FS.removeFile failedChangesFile catch _ => pure ()
     if !stableSections.isEmpty then
       try IO.FS.removeFile stableSectionsFile catch _ => pure ()
-    if tempMarker.isSome then
-      try IO.FS.removeFile tempMarkerFile catch _ => pure ()
 
   let child ← IO.Process.spawn {
     cmd := "lake"

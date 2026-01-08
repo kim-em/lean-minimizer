@@ -76,16 +76,12 @@ structure PassContext where
   outputFile : Option String := none
   /-- Memory of failed changes: keys are pass-specific strings -/
   failedChanges : Std.HashSet String := {}
-  /-- Temporary marker for parsimonious restarts. If set, this acts as
-      an additional invariant boundary. Commands containing this text
-      (and all after) should be treated as invariant. -/
-  tempMarker : Option String := none
-  /-- Index of temp marker in commands, if tempMarker is set.
-      Computed by finding first command containing tempMarker text. -/
-  tempMarkerIdx : Option Nat := none
   /-- Sections that have been fully processed and are considered stable.
       Commands within stable sections are skipped during unstable-only sweeps. -/
   stableSections : Std.HashSet String := {}
+  /-- Index boundary for stable region. All indices >= this value are considered stable.
+      Used during resume to freeze commands after the topmost section. -/
+  stableBoundaryIdx : Option Nat := none
   /-- Whether this is a complete sweep (process all including stable sections)
       or an unstable-only sweep (skip stable sections to save time). -/
   isCompleteSweep : Bool := true
@@ -102,19 +98,6 @@ structure PassResult where
   newFailedChanges : Array String := #[]
   /-- Whether to clear the failed changes memory -/
   clearMemory : Bool := false
-  /-- Temporary marker text for parsimonious restarts.
-      When set with a restart action, subsequent passes will use this
-      as an additional invariant boundary until it's cleared.
-      The marker is the text content of the first command that should be
-      treated as invariant (and all commands after it). -/
-  tempMarker : Option String := none
-  /-- Optional "search after" text for temp marker.
-      When set, the temp marker search will first find a command containing
-      this text, then search for tempMarker only in commands after that.
-      This is used by import inlining to ensure we find the temp marker in
-      the original content, not in newly inlined content that might contain
-      similar text. -/
-  tempMarkerSearchAfter : Option String := none
   deriving Inhabited
 
 /-- A minimization pass -/
@@ -148,44 +131,6 @@ def findMarkerIdxInSteps (steps : Array CompilationStep) (marker : String) : Opt
 
   return idx
 
-/-- Find the index of a temporary marker in CompilationStep array.
-    Returns the index of the first command whose reprinted syntax contains the marker text. -/
-def findTempMarkerIdxInSteps (steps : Array CompilationStep) (tempMarker : String) : Option Nat :=
-  steps.findIdx? fun step =>
-    let stxStr := step.stx.reprint.getD ""
-    stxStr.containsSubstr tempMarker
-
-/-- Find the index of a temporary marker in subprocess command array.
-    If `searchAfter` is provided, first find a command containing that text,
-    then search for `tempMarker` only in commands after that position. -/
-def findTempMarkerIdxInSubprocess (commands : Array SubprocessCmdInfo) (tempMarker : String)
-    (searchAfter : Option String := none) : Option Nat :=
-  match searchAfter with
-  | none =>
-    commands.findIdx? fun cmd =>
-      cmd.stxRepr.containsSubstr tempMarker
-  | some afterText =>
-    -- First find the "search after" command
-    let afterIdx? := commands.findIdx? fun cmd =>
-      cmd.stxRepr.containsSubstr afterText
-    match afterIdx? with
-    | none => none  -- searchAfter text not found
-    | some afterIdx => Id.run do
-      -- Search for tempMarker only in commands after afterIdx
-      for i in [afterIdx + 1:commands.size] do
-        if commands[i]!.stxRepr.containsSubstr tempMarker then
-          return some i
-      return none
-
-/-- Extract section name from tempMarkerSearchAfter text.
-    The format is "end ModuleName", so we strip the "end " prefix. -/
-def extractSectionName (tempMarkerSearchAfter : Option String) : Option String :=
-  tempMarkerSearchAfter.bind fun s =>
-    if s.startsWith "end " then
-      some (s.drop 4).toString  -- Drop "end " and convert Slice to String
-    else
-      none
-
 /-- Find indices of commands that fall within a named section.
     Scans for `section Name` and `end Name` pairs and returns all indices between them. -/
 def findSectionIndices (commands : Array SubprocessCmdInfo) (sectionName : String) : Array Nat := Id.run do
@@ -205,12 +150,18 @@ def findSectionIndices (commands : Array SubprocessCmdInfo) (sectionName : Strin
 
 /-- Compute all indices that fall within any stable section. -/
 def computeStableIndices (commands : Array SubprocessCmdInfo)
-    (stableSections : Std.HashSet String) : Std.HashSet Nat := Id.run do
+    (stableSections : Std.HashSet String)
+    (stableBoundaryIdx : Option Nat := none) : Std.HashSet Nat := Id.run do
   let mut result : Std.HashSet Nat := {}
+  -- Add indices from named stable sections
   for sectionName in stableSections do
     let indices := findSectionIndices commands sectionName
     for idx in indices do
       result := result.insert idx
+  -- Add all indices >= stableBoundaryIdx (for commands outside named sections)
+  if let some boundary := stableBoundaryIdx then
+    for i in [boundary:commands.size] do
+      result := result.insert i
   return result
 
 /-- Compute the byte position ranges covered by stable sections.
@@ -328,22 +279,21 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
     Tier 1 passes run in the orchestrator with serialized data.
     Tier 2 passes (needsSubprocess=true) run in a subprocess with full elaboration.
 
-    When `fullRestarts` is true, parsimonious restarts are disabled and all restarts
-    process the entire file (for debugging/comparison).
-
     The `completeSweepBudget` parameter (0.0 to 1.0) controls how much time is spent
     on "complete sweeps" that include stable sections. Default 0.20 means at most
     20% of runtime is spent reprocessing stable sections.
 
-    When `initialTempMarker` is set (e.g., from --resume), processing starts with
-    that temp marker active, focusing work on the most recent section first. -/
+    When `initialStableSections` is set (e.g., from --resume), those sections are
+    considered already processed and skipped during unstable-only sweeps.
+
+    When `initialStableBoundaryIdx` is set, all commands at or after this index are
+    considered stable (frozen). This handles commands outside named sections. -/
 unsafe def runPasses (passes : Array Pass) (input : String)
     (fileName : String) (marker : String) (verbose : Bool)
-    (outputFile : Option String := none) (fullRestarts : Bool := false)
+    (outputFile : Option String := none)
     (completeSweepBudget : Float := 0.20)
-    (initialTempMarker : Option String := none)
-    (initialTempMarkerSearchAfter : Option String := none)
-    (initialStableSections : Std.HashSet String := {}) : IO String := do
+    (initialStableSections : Std.HashSet String := {})
+    (initialStableBoundaryIdx : Option Nat := none) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -356,22 +306,16 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes
-  -- Initialize temp marker from parameters (e.g., from --resume)
-  let mut tempMarker : Option String := initialTempMarker
-  let mut tempMarkerSearchAfter : Option String := initialTempMarkerSearchAfter
 
   -- Stable section tracking
   let mut stableSections : Std.HashSet String := initialStableSections  -- Sections that have been fully processed
-  -- If we have an initial temp marker, extract the section name for tracking
-  let mut currentProcessingSection : Option String := extractSectionName initialTempMarkerSearchAfter
+  let stableBoundaryIdx : Option Nat := initialStableBoundaryIdx  -- Frozen boundary index
 
-  -- Log initial temp marker if set
-  if verbose && initialTempMarker.isSome then
-    let sectionInfo := currentProcessingSection.map (s!" (section: {·})") |>.getD ""
-    IO.eprintln s!"  Starting with initial temp marker (from --resume){sectionInfo}"
   -- Log initial stable sections if any
   if verbose && !initialStableSections.isEmpty then
     IO.eprintln s!"  Pre-populated {initialStableSections.size} stable sections from resume"
+  if verbose && initialStableBoundaryIdx.isSome then
+    IO.eprintln s!"  Stable boundary at index {initialStableBoundaryIdx.get!} (commands after this are frozen)"
 
   -- Time budget tracking for complete sweeps
   let mut totalRuntime : Nat := 0        -- Total milliseconds spent in passes
@@ -418,7 +362,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
       let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
-          stableSections isCompleteSweep tempMarker tempMarkerSearchAfter
+          stableSections isCompleteSweep stableBoundaryIdx
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data
@@ -429,10 +373,6 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
       -- Convert subprocess result to PassContext data
       let (header, headerEndPos, steps) ← subprocessResult.toPassContextData
-
-      -- Compute temp marker index if we have a temp marker
-      let tempMarkerIdx := tempMarker.bind fun tm =>
-        findTempMarkerIdxInSubprocess subprocessResult.commands tm tempMarkerSearchAfter
 
       let ctx : PassContext := {
         source, fileName, marker, verbose
@@ -447,9 +387,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         markerIdx
         outputFile
         failedChanges
-        tempMarker
-        tempMarkerIdx
         stableSections
+        stableBoundaryIdx
         isCompleteSweep
       }
       pass.run ctx
@@ -481,24 +420,9 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         if verbose then
           IO.eprintln s!"  No changes, moving to next pass"
         passIdx := passIdx + 1
-        -- If we've completed all passes with a temp marker active
-        if passIdx >= passes.size && tempMarker.isSome then
-          -- If no changes in this cycle, mark the current section as stable
-          if !cycleHadChanges then
-            if let some sectionName := currentProcessingSection then
-              stableSections := stableSections.insert sectionName
-              if verbose then
-                IO.eprintln s!"  Marking section '{sectionName}' as stable"
-          -- Clear temp marker and restart
-          if verbose then
-            IO.eprintln s!"  All passes complete with temp marker active, clearing and restarting"
-          tempMarker := none
-          tempMarkerSearchAfter := none
-          currentProcessingSection := none
-          passIdx := 0
-        -- Final complete sweep: if all passes complete, no temp marker, but stable sections exist
+        -- Final complete sweep: if all passes complete but stable sections exist
         -- Only do this ONCE to prevent infinite loops
-        else if passIdx >= passes.size && tempMarker.isNone && !stableSections.isEmpty && !finalSweepDone then
+        if passIdx >= passes.size && !stableSections.isEmpty && !finalSweepDone then
           if verbose then
             IO.eprintln s!"  All passes complete, triggering final complete sweep (clearing {stableSections.size} stable sections)"
           stableSections := {}
@@ -523,26 +447,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
     match result.action with
     | .restart =>
-      -- Capture temp marker if pass returned one (for parsimonious restarts)
-      -- Skip if fullRestarts mode is enabled
-      -- IMPORTANT: Don't override an existing temp marker - the first one should persist
-      -- through the entire parsimonious cycle (e.g., for transitive import inlining)
-      if result.tempMarker.isSome && !fullRestarts && tempMarker.isNone then
-        tempMarker := result.tempMarker
-        tempMarkerSearchAfter := result.tempMarkerSearchAfter
-        -- Extract section name from tempMarkerSearchAfter ("end ModuleName" → "ModuleName")
-        currentProcessingSection := extractSectionName result.tempMarkerSearchAfter
-        if verbose then
-          let sectionInfo := currentProcessingSection.map (s!" (section: {·})") |>.getD ""
-          IO.eprintln s!"  Changes made, restarting with temp marker (parsimonious restart){sectionInfo}"
-      else if tempMarker.isSome then
-        -- Keep existing temp marker
-        if verbose then
-          IO.eprintln s!"  Changes made, restarting (keeping existing temp marker)"
-      else
-        -- No temp marker
-        if verbose then
-          IO.eprintln s!"  Changes made, restarting from first pass"
+      if verbose then
+        IO.eprintln s!"  Changes made, restarting from first pass"
       pendingRestart := false
       passIdx := 0
     | .repeat =>

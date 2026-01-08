@@ -33,57 +33,45 @@ unsafe def deletionPass : Pass where
   name := "Command Deletion"
   cliFlag := "delete"
   run := fun ctx => do
-    -- Compute effective upper bound: min of real marker and temp marker (if set)
-    -- This enables parsimonious restarts - only delete in the active region
-    let effectiveMarkerIdx := match ctx.tempMarkerIdx with
-      | some tempIdx => min ctx.markerIdx tempIdx
-      | none => ctx.markerIdx
-
     -- Compute stable indices to skip (if not in complete sweep mode)
     let stableIndices := if ctx.isCompleteSweep then
       {}
     else
-      computeStableIndices ctx.subprocessCommands ctx.stableSections
+      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.stableBoundaryIdx
 
     if ctx.verbose then
-      if ctx.tempMarkerIdx.isSome then
-        IO.eprintln s!"  (Parsimonious mode: processing up to index {effectiveMarkerIdx}, \
-          temp marker at {ctx.tempMarkerIdx.get!})"
       if !ctx.isCompleteSweep && !ctx.stableSections.isEmpty then
         IO.eprintln s!"  (Unstable-only sweep: skipping {stableIndices.size} stable indices)"
 
     -- Create MinState using pre-elaborated data (no re-parsing needed)
     let state ← mkMinStateFromContext ctx
 
-    -- Build candidate list: all indices before effective marker, excluding:
+    -- Build candidate list: all indices before marker, excluding:
     -- - scope commands (section/namespace/end)
     -- - stable indices (during unstable-only sweeps)
-    let allIndices := (Array.range effectiveMarkerIdx).filter fun idx =>
+    let allIndices := (Array.range ctx.markerIdx).filter fun idx =>
       if h : idx < ctx.steps.size then
         !isScopeCommand ctx.steps[idx].stx && !stableIndices.contains idx
       else
         !stableIndices.contains idx
 
-    -- In parsimonious mode, commands from effectiveMarkerIdx to markerIdx-1 are "frozen"
-    -- They are the original commands that shouldn't be touched during this pass
-    -- These must be included in all tests since reconstructSource only auto-includes markerIdx+
-    -- Also include stable indices as frozen (they must be present for compilation but not candidates)
-    let frozenIndices := Id.run do
-      let mut frozen := if ctx.tempMarkerIdx.isSome then
-        (Array.range ctx.markerIdx).filter (· >= effectiveMarkerIdx)
-      else
-        #[]
-      -- Add stable indices to frozen list
-      for idx in stableIndices do
-        if idx < effectiveMarkerIdx && !frozen.contains idx then
-          frozen := frozen.push idx
-      return frozen
+    -- Show first and last candidate commands for sanity checking
+    if ctx.verbose && !allIndices.isEmpty then
+      let getPreview (idx : Nat) : String :=
+        if h : idx < ctx.subprocessCommands.size then
+          let text := ctx.subprocessCommands[idx].stxRepr.trimAscii.toString
+          let preview := if text.length > 60 then (text.take 60).toString ++ "..." else text
+          s!"[{idx}] {preview}"
+        else s!"[{idx}] <unknown>"
+      IO.eprintln s!"  First candidate: {getPreview allIndices[0]!}"
+      if allIndices.size > 1 then
+        IO.eprintln s!"  Last candidate:  {getPreview allIndices[allIndices.size - 1]!}"
+
+    -- Stable indices must be present for compilation but are not candidates for deletion
+    let frozenIndices := stableIndices.toArray
 
     -- Verify original compiles (include frozen indices in the test)
-    -- Note: binaryDelete internally uses Array.range state.markerIdx as currentlyKept,
-    -- which includes the frozen indices. But this initial test bypasses binaryDelete.
-    -- Deduplicate and sort the indices (frozenIndices may overlap with Array.range)
-    let originalIndices := (Array.range effectiveMarkerIdx ++ frozenIndices).toList
+    let originalIndices := (Array.range ctx.markerIdx).toList
       |>.eraseDups |>.toArray |>.qsort (· < ·)
     if ctx.verbose then
       IO.eprintln s!"  (allIndices: {allIndices.size}, frozenIndices: {frozenIndices.size}, originalIndices: {originalIndices.size})"
@@ -93,13 +81,11 @@ unsafe def deletionPass : Pass where
     -- Run binary deletion
     -- Note: keptIndices will only contain non-scope commands, but we need to
     -- add back the scope commands that were excluded from deletion
-    let scopeIndices := (Array.range effectiveMarkerIdx).filter fun idx =>
+    let scopeIndices := (Array.range ctx.markerIdx).filter fun idx =>
       if h : idx < ctx.steps.size then
         isScopeCommand ctx.steps[idx].stx
       else
         false
-    -- binaryDelete internally includes frozenIndices in currentlyKept because it uses
-    -- Array.range state.markerIdx, and frozen indices are in [effectiveMarkerIdx, markerIdx)
     let keptNonScopeIndices ← binaryDelete defaultSplitHeuristic state allIndices
     -- Combine kept non-scope indices with all scope indices and frozen indices
     -- Deduplicate because scopeIndices and frozenIndices may overlap
