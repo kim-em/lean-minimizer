@@ -45,7 +45,8 @@ def isComplexOpenLine (line : String) : Bool :=
   line.containsSubstr "hiding" ||
   line.containsSubstr "renaming" ||
   line.containsSubstr "(" ||
-  line.containsSubstr ")"
+  line.containsSubstr ")" ||
+  line.containsSubstr " in"  -- `open X in` scopes to next expression only
 
 /-- Parse an open command line into an OpenCommand structure.
     Returns none if the line is not a basic open command or is too complex. -/
