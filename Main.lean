@@ -306,19 +306,25 @@ unsafe def main (args : List String) : IO UInt32 := do
       -- When resuming, find the topmost section to focus on first
       let mut initialTempMarker : Option String := none
       let mut initialTempMarkerSearchAfter : Option String := none
+      let mut initialStableSections : Std.HashSet String := {}
       if isResuming then do
         -- Parse the file to find commands
         let subprocessResult ← runAnalyzeSubprocess input inputFile
         let some markerIdx := findMarkerIdxInSubprocessSteps subprocessResult.commands parsedArgs.marker
           | throw <| IO.userError (markerNotFoundError parsedArgs.marker)
+        -- Find all sections
+        let allSections := findAllSections subprocessResult.commands markerIdx
         -- Find the topmost section
         match findTopmostSection subprocessResult.commands markerIdx with
-        | some (sectionName, _endIdx, nextCmdText) =>
+        | some (sectionName, endIdx, nextCmdText) =>
           if parsedArgs.verbose then
             IO.eprintln s!"  Found topmost section: {sectionName}"
           -- Use the next command's text as temp marker, or fall back to end marker
           initialTempMarker := some (nextCmdText.getD s!"end {sectionName}")
           initialTempMarkerSearchAfter := some s!"end {sectionName}"
+          -- Sections after the topmost one are already stable (processed in previous runs)
+          let sectionsAfter := allSections.filter (fun (_, idx) => idx > endIdx)
+          initialStableSections := sectionsAfter.foldl (fun acc (name, _) => acc.insert name) {}
         | none =>
           if parsedArgs.verbose then
             IO.eprintln s!"  No section found, processing entire file"
@@ -326,6 +332,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile) parsedArgs.fullRestarts
                      parsedArgs.completeSweepBudget initialTempMarker initialTempMarkerSearchAfter
+                     initialStableSections
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>

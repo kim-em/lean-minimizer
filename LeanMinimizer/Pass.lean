@@ -266,6 +266,25 @@ def findTopmostSection (commands : Array SubprocessCmdInfo) (markerIdx : Nat) :
           return some (sectionName, j, nextText)
   return none
 
+/-- Find all `section X` / `end X` pairs in commands up to markerIdx.
+    Returns an array of (sectionName, endCommandIdx). -/
+def findAllSections (commands : Array SubprocessCmdInfo) (markerIdx : Nat) :
+    Array (String × Nat) := Id.run do
+  let mut result : Array (String × Nat) := #[]
+  for i in [:min commands.size markerIdx] do
+    let cmd := commands[i]!
+    let text := cmd.stxRepr.trimAscii
+    if text.startsWith "section " then
+      let sectionName := (text.drop 7).takeWhile (· != '\n') |>.trimAscii |>.toString
+      if sectionName.isEmpty then continue
+      let endText := s!"end {sectionName}"
+      for j in [i + 1:min commands.size markerIdx] do
+        let endCmd := commands[j]!
+        if endCmd.stxRepr.trimAscii.startsWith endText then
+          result := result.push (sectionName, j)
+          break
+  return result
+
 /-- Create a MinState from PassContext, using pre-elaborated data.
     This avoids re-parsing the file. -/
 def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
@@ -313,7 +332,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     (outputFile : Option String := none) (fullRestarts : Bool := false)
     (completeSweepBudget : Float := 0.20)
     (initialTempMarker : Option String := none)
-    (initialTempMarkerSearchAfter : Option String := none) : IO String := do
+    (initialTempMarkerSearchAfter : Option String := none)
+    (initialStableSections : Std.HashSet String := {}) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -328,7 +348,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   let mut tempMarkerSearchAfter : Option String := initialTempMarkerSearchAfter
 
   -- Stable section tracking
-  let mut stableSections : Std.HashSet String := {}  -- Sections that have been fully processed
+  let mut stableSections : Std.HashSet String := initialStableSections  -- Sections that have been fully processed
   -- If we have an initial temp marker, extract the section name for tracking
   let mut currentProcessingSection : Option String := extractSectionName initialTempMarkerSearchAfter
 
@@ -336,6 +356,9 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   if verbose && initialTempMarker.isSome then
     let sectionInfo := currentProcessingSection.map (s!" (section: {·})") |>.getD ""
     IO.eprintln s!"  Starting with initial temp marker (from --resume){sectionInfo}"
+  -- Log initial stable sections if any
+  if verbose && !initialStableSections.isEmpty then
+    IO.eprintln s!"  Pre-populated {initialStableSections.size} stable sections from resume"
 
   -- Time budget tracking for complete sweeps
   let mut totalRuntime : Nat := 0        -- Total milliseconds spent in passes
