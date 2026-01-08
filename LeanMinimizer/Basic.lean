@@ -103,6 +103,7 @@ Options:
       --only-empty-scope       Empty scope removal
       --only-sorry             Body replacement (sorry)
       --only-text-subst        Text substitution
+      --only-field-removal     Structure field removal
       --only-extends           Extends simplification
       --only-attr-expansion    Attribute expansion
       --only-import-minimization  Import minimization
@@ -150,14 +151,14 @@ structure Args where
   noImportInlining : Bool := false
   /-- Disable the text substitution pass -/
   noTextSubst : Bool := false
+  /-- Disable the structure field removal pass -/
+  noFieldRemoval : Bool := false
   /-- Disable the extends clause simplification pass -/
   noExtendsSimplification : Bool := false
   /-- Run only a specific pass (by CLI flag name) -/
   onlyPass : Option String := none
   /-- Resume from output file if it exists -/
   resume : Bool := false
-  /-- Disable parsimonious restarts (for debugging) -/
-  fullRestarts : Bool := false
   /-- Budget for complete sweeps as fraction of runtime (0.0-1.0, default 0.20) -/
   completeSweepBudget : Float := 0.20
 
@@ -188,6 +189,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-import-minimization" :: rest => go rest { acc with noImportMinimization := true }
     | "--no-import-inlining" :: rest => go rest { acc with noImportInlining := true }
     | "--no-text-subst" :: rest => go rest { acc with noTextSubst := true }
+    | "--no-field-removal" :: rest => go rest { acc with noFieldRemoval := true }
     | "--no-extends" :: rest => go rest { acc with noExtendsSimplification := true }
     | "--only-delete" :: rest => go rest { acc with onlyPass := some "delete" }
     | "--only-module-removal" :: rest => go rest { acc with onlyPass := some "module-removal" }
@@ -195,11 +197,11 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-import-minimization" :: rest => go rest { acc with onlyPass := some "import-minimization" }
     | "--only-import-inlining" :: rest => go rest { acc with onlyPass := some "import-inlining" }
     | "--only-text-subst" :: rest => go rest { acc with onlyPass := some "text-subst" }
+    | "--only-field-removal" :: rest => go rest { acc with onlyPass := some "field-removal" }
     | "--only-extends" :: rest => go rest { acc with onlyPass := some "extends" }
     | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | "--resume" :: rest => go rest { acc with resume := true }
-    | "--full-restarts" :: rest => go rest { acc with fullRestarts := true }
     | "--complete-sweep-budget" :: value :: rest =>
       -- Parse as percentage (0-100) and convert to fraction
       match value.toNat? with

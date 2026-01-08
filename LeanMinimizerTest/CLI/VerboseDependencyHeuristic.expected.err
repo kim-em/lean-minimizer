@@ -3,6 +3,8 @@
   File does not use module system, skipping
   No changes, moving to next pass
 [Pass 1] Running: Command Deletion
+  First candidate: [0] def base := 1
+  Last candidate:  [9] def unrelated2 := unrelated1 * 2
   (allIndices: 10, frozenIndices: 0, originalIndices: 10)
   Testing: try remove [5, 6, 7, 8, 9] (keep [0, 1, 2, 3, 4])
     → Success: removed [5, 6, 7, 8, 9], continuing on [0, 1, 2, 3, 4]
@@ -27,6 +29,8 @@
   Removed 5 of 10 candidate commands (9 tests)
   Changes made, repeating pass
 [Pass 1] Running: Command Deletion
+  First candidate: [0] def base := 1
+  Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
   Testing: try remove [2, 3, 4] (keep [0, 1])
     → Failed
@@ -67,6 +71,8 @@
   File does not use module system, skipping
   No changes, moving to next pass
 [Pass 1] Running: Command Deletion
+  First candidate: [0] def base := 1
+  Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
   Testing: try remove [2, 3, 4] (keep [0, 1])
     → Failed
@@ -100,21 +106,24 @@
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 7] Running: Extends Simplification
+[Pass 7] Running: Structure Field Removal
+  Looking for structure/class fields to remove...
+  No changes, moving to next pass
+[Pass 8] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 8] Running: Attribute Expansion
+[Pass 9] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 9] Running: Import Minimization
+[Pass 10] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 10] Running: Import Inlining
+[Pass 11] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
-[Pass 11] Running: Clear Memory
+[Pass 12] Running: Clear Memory
   Memory is empty, no final sweep needed
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean

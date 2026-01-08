@@ -65,3 +65,27 @@ lake build minimize  # Build just the CLI binary
 ```bash
 lake exe minimize <file.lean> --marker "#guard_msgs"
 ```
+
+## CRITICAL: Capture Output from Expensive Commands
+
+**NEVER run expensive commands (minimizer, tests, lake build) multiple times to extract different parts of the output.** Instead:
+
+1. **First run: capture to file AND limit what you see:**
+   ```bash
+   # Capture everything to file, but only show tail to save tokens
+   lake exe test 2>&1 | tee /tmp/test-run.log | tail -30
+
+   # Or for minimizer runs:
+   lake exe minimize file.lean --marker "#guard_msgs" 2>&1 | tee /tmp/minimize-run.log | tail -50
+   ```
+
+2. **Then extract other parts from the saved file:**
+   ```bash
+   grep "✗\|✓" /tmp/test-run.log              # Just pass/fail results
+   grep -A5 "Structure Field" /tmp/minimize-run.log  # Specific pass output
+   head -100 /tmp/test-run.log                 # Beginning of output
+   ```
+
+3. **If you need to re-examine the output, use the file - don't re-run.**
+
+This pattern applies to ANY expensive command. The minimizer and test suite can take minutes to run - never waste that by piping through `head`/`tail`/`grep` and losing the rest.

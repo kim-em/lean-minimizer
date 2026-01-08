@@ -48,21 +48,24 @@
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 4] Running: Extends Simplification
+[Pass 4] Running: Structure Field Removal
+  Looking for structure/class fields to remove...
+  No changes, moving to next pass
+[Pass 5] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 5] Running: Attribute Expansion
+[Pass 6] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 6] Running: Import Minimization
+[Pass 7] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 7] Running: Import Inlining
+[Pass 8] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
-[Pass 8] Running: Clear Memory
+[Pass 9] Running: Clear Memory
   Memory is empty, no final sweep needed
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean
