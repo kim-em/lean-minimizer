@@ -376,7 +376,7 @@ def attributeExpansionPass : Pass where
     let stableIndices := if ctx.isCompleteSweep then
       {}
     else
-      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.stableBoundaryIdx
+      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     -- Find the last command with a generative attribute
     let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx stableIndices

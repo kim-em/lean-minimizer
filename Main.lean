@@ -54,7 +54,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
-    (stableBoundaryIdx : Option Nat := none) : IO Unit := do
+    (topmostEndIdx : Option Nat := none) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -85,7 +85,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     outputFile := none
     failedChanges
     stableSections
-    stableBoundaryIdx
+    topmostEndIdx
     isCompleteSweep
   }
 
@@ -112,9 +112,9 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
-    (stableBoundaryIdx : Option Nat := none) : IO UInt32 := do
+    (topmostEndIdx : Option Nat := none) : IO UInt32 := do
   try
-    runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep stableBoundaryIdx
+    runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep topmostEndIdx
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -127,7 +127,7 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     (memoryFile : Option String := none)
     (stableFile : Option String := none)
     (isCompleteSweep : Bool := true)
-    (stableBoundaryIdx : Option Nat := none) : IO UInt32 := do
+    (topmostEndIdx : Option Nat := none) : IO UInt32 := do
   initSearchPath (← findSysroot)
 
   -- Read failedChanges from memory file if provided
@@ -168,7 +168,7 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     IO.eprintln s!"Unknown pass: {passName}"
     return 1
   | some (_, pass) =>
-    runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep stableBoundaryIdx
+    runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep topmostEndIdx
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -226,7 +226,7 @@ def parseRunPassArgs (args : List String) :
     let mut memoryFile : Option String := none
     let mut stableFile : Option String := none
     let mut isCompleteSweep := true
-    let mut stableBoundaryIdx : Option Nat := none
+    let mut topmostEndIdx : Option Nat := none
     let mut remaining := rest
     while !remaining.isEmpty do
       match remaining with
@@ -235,14 +235,14 @@ def parseRunPassArgs (args : List String) :
       | "--memory-file" :: mf :: tail => memoryFile := some mf; remaining := tail
       | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
       | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
-      | "--stable-boundary" :: b :: tail => stableBoundaryIdx := b.toNat?; remaining := tail
+      | "--topmost-end-idx" :: idx :: tail => topmostEndIdx := idx.toNat?; remaining := tail
       | [] => remaining := []  -- Exit while loop
       | unknown :: _ =>
           -- Log warning for unexpected args (shouldn't happen with internal subprocess calls)
           dbg_trace s!"Warning: Unknown --run-pass argument: {unknown}. Ignoring remaining args."
           remaining := []
     let m ← marker
-    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep, stableBoundaryIdx)
+    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep, topmostEndIdx)
   | _ => none
 
 /-- Entry point -/
@@ -254,9 +254,9 @@ unsafe def main (args : List String) : IO UInt32 := do
   | ["--analyze", file] => return ← handleAnalyze file
   | _ =>
     -- Try to parse as --run-pass command
-    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep, stableBoundaryIdx) :=
+    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep, topmostEndIdx) :=
         parseRunPassArgs args then
-      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep stableBoundaryIdx
+      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep topmostEndIdx
     else
       pure ()
 
@@ -295,7 +295,7 @@ unsafe def main (args : List String) : IO UInt32 := do
 
       -- When resuming, find sections to mark as stable
       let mut initialStableSections : Std.HashSet String := {}
-      let mut initialStableBoundaryIdx : Option Nat := none
+      let mut initialTopmostEndIdx : Option Nat := none
       if isResuming then do
         -- Parse the file to find commands
         let subprocessResult ← runAnalyzeSubprocess input inputFile
@@ -311,16 +311,15 @@ unsafe def main (args : List String) : IO UInt32 := do
           -- Sections after the topmost one are already stable (processed in previous runs)
           let sectionsAfter := allSections.filter (fun (_, idx) => idx > endIdx)
           initialStableSections := sectionsAfter.foldl (fun acc (name, _) => acc.insert name) {}
-          -- Also set the stable boundary to freeze all commands after the topmost section
-          -- This catches commands that aren't inside any named section
-          initialStableBoundaryIdx := some (endIdx + 1)
+          -- Set boundary to freeze all commands after the topmost section
+          initialTopmostEndIdx := some endIdx
         | none =>
           if parsedArgs.verbose then
             IO.eprintln s!"  No section found, processing entire file"
 
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)
-                     parsedArgs.completeSweepBudget initialStableSections initialStableBoundaryIdx
+                     parsedArgs.completeSweepBudget initialStableSections initialTopmostEndIdx
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>

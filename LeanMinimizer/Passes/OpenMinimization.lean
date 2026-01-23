@@ -193,8 +193,7 @@ unsafe def openMinimizationPass : Pass where
       return { source := ctx.source, changed := false, action := .continue,
                newFailedChanges := newFailedChanges }
 
-    -- Repeat to catch any further opportunities
-    return { source := currentSource, changed := true, action := .repeat,
+    return { source := currentSource, changed := true, action := .continue,
              newFailedChanges := newFailedChanges }
 
 end LeanMinimizer

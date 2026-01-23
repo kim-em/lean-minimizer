@@ -602,7 +602,7 @@ def textSubstitutionPass : Pass where
     let stableRanges := if ctx.isCompleteSweep then
       #[]
     else
-      computeStablePositionRanges ctx.subprocessCommands ctx.stableSections
+      computeStablePositionRanges ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     for miniPass in miniPasses do
       let allReplacements := miniPass.findReplacements source

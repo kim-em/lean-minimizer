@@ -144,7 +144,7 @@ def bodyReplacementPass : Pass where
     let stableIndices := if ctx.isCompleteSweep then
       {}
     else
-      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.stableBoundaryIdx
+      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     -- Track current source (mutated as we make replacements)
     let mut currentSource := ctx.source

@@ -37,7 +37,7 @@ unsafe def deletionPass : Pass where
     let stableIndices := if ctx.isCompleteSweep then
       {}
     else
-      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.stableBoundaryIdx
+      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     if ctx.verbose then
       if !ctx.isCompleteSweep && !ctx.stableSections.isEmpty then

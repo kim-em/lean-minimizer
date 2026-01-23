@@ -79,9 +79,9 @@ structure PassContext where
   /-- Sections that have been fully processed and are considered stable.
       Commands within stable sections are skipped during unstable-only sweeps. -/
   stableSections : Std.HashSet String := {}
-  /-- Index boundary for stable region. All indices >= this value are considered stable.
-      Used during resume to freeze commands after the topmost section. -/
-  stableBoundaryIdx : Option Nat := none
+  /-- End index of the topmost section. All indices after this are considered stable
+      during unstable-only sweeps (freezes gaps between sections and trailing content). -/
+  topmostEndIdx : Option Nat := none
   /-- Whether this is a complete sweep (process all including stable sections)
       or an unstable-only sweep (skip stable sections to save time). -/
   isCompleteSweep : Bool := true
@@ -148,27 +148,35 @@ def findSectionIndices (commands : Array SubprocessCmdInfo) (sectionName : Strin
       inSection := false
   return result
 
-/-- Compute all indices that fall within any stable section. -/
+/-- Compute all indices that fall within any stable section.
+    Also freezes trailing content after the last stable section (gaps between sections
+    and content after the final stable section). -/
 def computeStableIndices (commands : Array SubprocessCmdInfo)
     (stableSections : Std.HashSet String)
-    (stableBoundaryIdx : Option Nat := none) : Std.HashSet Nat := Id.run do
+    (markerIdx : Nat)
+    (_topmostEndIdx : Option Nat := none) : Std.HashSet Nat := Id.run do
   let mut result : Std.HashSet Nat := {}
-  -- Add indices from named stable sections
+  let mut maxStableEndIdx : Nat := 0
+  -- Add indices from named stable sections and track the maximum end index
   for sectionName in stableSections do
     let indices := findSectionIndices commands sectionName
     for idx in indices do
       result := result.insert idx
-  -- Add all indices >= stableBoundaryIdx (for commands outside named sections)
-  if let some boundary := stableBoundaryIdx then
-    for i in [boundary:commands.size] do
+      if idx > maxStableEndIdx then
+        maxStableEndIdx := idx
+  -- Freeze trailing content after the last stable section
+  if !stableSections.isEmpty && maxStableEndIdx > 0 then
+    for i in [maxStableEndIdx + 1 : markerIdx] do
       result := result.insert i
   return result
 
 /-- Compute the byte position ranges covered by stable sections.
     Returns array of (startPos, endPos) byte positions. -/
 def computeStablePositionRanges (commands : Array SubprocessCmdInfo)
-    (stableSections : Std.HashSet String) : Array (Nat × Nat) := Id.run do
-  let stableIndices := computeStableIndices commands stableSections
+    (stableSections : Std.HashSet String)
+    (markerIdx : Nat)
+    (topmostEndIdx : Option Nat := none) : Array (Nat × Nat) := Id.run do
+  let stableIndices := computeStableIndices commands stableSections markerIdx topmostEndIdx
   if stableIndices.isEmpty then return #[]
 
   let mut ranges : Array (Nat × Nat) := #[]
@@ -286,14 +294,14 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
     When `initialStableSections` is set (e.g., from --resume), those sections are
     considered already processed and skipped during unstable-only sweeps.
 
-    When `initialStableBoundaryIdx` is set, all commands at or after this index are
-    considered stable (frozen). This handles commands outside named sections. -/
+    When `initialTopmostEndIdx` is set, all commands after this index are considered
+    stable during unstable-only sweeps (freezes gaps and trailing content). -/
 unsafe def runPasses (passes : Array Pass) (input : String)
     (fileName : String) (marker : String) (verbose : Bool)
     (outputFile : Option String := none)
     (completeSweepBudget : Float := 0.20)
     (initialStableSections : Std.HashSet String := {})
-    (initialStableBoundaryIdx : Option Nat := none) : IO String := do
+    (initialTopmostEndIdx : Option Nat := none) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -309,13 +317,13 @@ unsafe def runPasses (passes : Array Pass) (input : String)
 
   -- Stable section tracking
   let mut stableSections : Std.HashSet String := initialStableSections  -- Sections that have been fully processed
-  let stableBoundaryIdx : Option Nat := initialStableBoundaryIdx  -- Frozen boundary index
+  let topmostEndIdx : Option Nat := initialTopmostEndIdx  -- Freeze commands after this index
 
   -- Log initial stable sections if any
   if verbose && !initialStableSections.isEmpty then
     IO.eprintln s!"  Pre-populated {initialStableSections.size} stable sections from resume"
-  if verbose && initialStableBoundaryIdx.isSome then
-    IO.eprintln s!"  Stable boundary at index {initialStableBoundaryIdx.get!} (commands after this are frozen)"
+  if verbose && initialTopmostEndIdx.isSome then
+    IO.eprintln s!"  Stable boundary at index {initialTopmostEndIdx.get!} (commands after this are frozen)"
 
   -- Time budget tracking for complete sweeps
   let mut totalRuntime : Nat := 0        -- Total milliseconds spent in passes
@@ -362,7 +370,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
       let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
-          stableSections isCompleteSweep stableBoundaryIdx
+          stableSections isCompleteSweep topmostEndIdx
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data
@@ -388,7 +396,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         outputFile
         failedChanges
         stableSections
-        stableBoundaryIdx
+        topmostEndIdx
         isCompleteSweep
       }
       pass.run ctx

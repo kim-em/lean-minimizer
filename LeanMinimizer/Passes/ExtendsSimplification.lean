@@ -285,7 +285,7 @@ def extendsSimplificationPass : Pass where
     let stableIndices := if ctx.isCompleteSweep then
       {}
     else
-      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.stableBoundaryIdx
+      computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     let mut failedKeys : Array String := #[]
 
