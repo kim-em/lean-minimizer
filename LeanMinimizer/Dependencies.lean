@@ -82,12 +82,16 @@ unsafe def runFrontend (input : String) (fileName : String) : IO FrontendResult 
   let (header, parserState, messages) ← Parser.parseHeader inputCtx
 
   if messages.hasErrors then
-    throw <| IO.userError "File has header errors"
+    let errMsgs ← messages.toList.filterMapM fun msg => do
+      if msg.severity == .error then pure (some (← msg.toString)) else pure none
+    throw <| IO.userError s!"File has header errors:\n{"\n".intercalate errMsgs}"
 
   let (env, messages) ← processHeader header {} messages inputCtx
 
   if messages.hasErrors then
-    throw <| IO.userError "Header processing failed"
+    let errMsgs ← messages.toList.filterMapM fun msg => do
+      if msg.severity == .error then pure (some (← msg.toString)) else pure none
+    throw <| IO.userError s!"Header processing failed:\n{"\n".intercalate errMsgs}"
 
   let headerEndPos := parserState.pos
 
