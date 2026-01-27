@@ -15,6 +15,7 @@ import LeanMinimizerTest.Golden.ImportInliningComplex.D
 import LeanMinimizerTest.Golden.ImportInliningComplex.E
 import LeanMinimizerTest.Golden.ImportInliningDemodulize.Dep
 import LeanMinimizerTest.Golden.ImportInliningDemodulize.ModFile
+import LeanMinimizerTest.Golden.ImportInliningMultipleSections.Module
 import LeanMinimizerTest.Golden.ImportInliningNamespace.WithNS
 import LeanMinimizerTest.Golden.ImportInliningNested.Multi
 import LeanMinimizerTest.Golden.ImportInliningTransitive.A
@@ -24,3 +25,4 @@ import LeanMinimizerTest.Golden.ImportMinimization.B
 import LeanMinimizerTest.Golden.ImportRemoval.Unused
 import LeanMinimizerTest.Golden.ImportRequired.Needed
 import LeanMinimizerTest.Golden.ModuleRemoval.Dep
+import LeanMinimizerTest.Golden.ParsimoniousRestart.Lib
