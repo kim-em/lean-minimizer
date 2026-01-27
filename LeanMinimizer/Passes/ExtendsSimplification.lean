@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Kim Morrison
 -/
 import LeanMinimizer.Pass
+import LeanMinimizer.LakefileOptions
 
 /-!
 # Extends Clause Simplification Pass
@@ -174,12 +175,15 @@ def runLeanOnSource (source : String) (fileName : String) : IO (UInt32 × String
     ("PATH", path)
   ]
 
+  -- Get leanOptions from the project's lakefile
+  let leanOptions ← getLeanOptionsForFile fileName
+
   let cwd := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
   -- Run lean with try/finally for cleanup
   try
     let result ← IO.Process.output {
       cmd := "lean"
-      args := #[tempFile.toString]
+      args := leanOptions ++ #[tempFile.toString]
       env := env
       cwd := some cwd
     }

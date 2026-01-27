@@ -6,6 +6,7 @@ Authors: Kim Morrison
 import Lean.Elab.Frontend
 import Lean.Elab.Command
 import Lean.Util.Path
+import LeanMinimizer.LakefileOptions
 
 /-!
 # Minimize: A Lean test case minimizer
@@ -470,11 +471,14 @@ def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
     ("PATH", path)
   ]
 
+  -- Get leanOptions from the project's lakefile
+  let leanOptions ← getLeanOptionsForFile fileName
+
   -- Run lean to check compilation, with try/finally for cleanup
   try
     let result ← IO.Process.output {
       cmd := "lean"
-      args := #[tempFile.toString]
+      args := leanOptions ++ #[tempFile.toString]
       env := env
     }
     return result.exitCode == 0
@@ -501,11 +505,14 @@ def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (
     ("PATH", path)
   ]
 
+  -- Get leanOptions from the project's lakefile
+  let leanOptions ← getLeanOptionsForFile fileName
+
   -- Run lean to check compilation, with try/finally for cleanup
   try
     let result ← IO.Process.output {
       cmd := "lean"
-      args := #[tempFile.toString]
+      args := leanOptions ++ #[tempFile.toString]
       env := env
     }
     let success := result.exitCode == 0

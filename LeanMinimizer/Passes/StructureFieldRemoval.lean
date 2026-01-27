@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Kim Morrison
 -/
 import LeanMinimizer.Pass
+import LeanMinimizer.LakefileOptions
 
 /-!
 # Structure Field Removal Pass
@@ -209,11 +210,14 @@ def runLeanOnSourceForField (source : String) (fileName : String) : IO (UInt32 �
     ("PATH", path)
   ]
 
+  -- Get leanOptions from the project's lakefile
+  let leanOptions ← getLeanOptionsForFile fileName
+
   let cwd := (System.FilePath.mk fileName).parent.getD (System.FilePath.mk ".")
   try
     let result ← IO.Process.output {
       cmd := "lean"
-      args := #[tempFile.toString]
+      args := leanOptions ++ #[tempFile.toString]
       env := env
       cwd := some cwd
     }
