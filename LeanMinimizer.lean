@@ -4,6 +4,7 @@ import LeanMinimizer.Basic
 import LeanMinimizer.Dependencies
 import LeanMinimizer.Subprocess
 import LeanMinimizer.Pass
+import LeanMinimizer.LakefileOptions
 import LeanMinimizer.Passes.ModuleRemoval
 import LeanMinimizer.Passes.Deletion
 import LeanMinimizer.Passes.EmptyScopeRemoval
