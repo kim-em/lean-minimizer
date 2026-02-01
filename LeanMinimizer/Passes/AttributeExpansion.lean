@@ -307,14 +307,20 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
 
 /-! ## The pass -/
 
+/-- Memory key for tracking failed attribute expansions -/
+def attrExpansionKey (cmdIdx : Nat) : String := s!"attr-expansion:{cmdIdx}"
+
 /-- Find the last command index that has a generative attribute.
-    Skips stable indices during unstable-only sweeps. -/
+    Skips stable indices and already-failed expansions. -/
 def findLastGenerativeAttrCmd (steps : Array CompilationStep) (markerIdx : Nat)
-    (stableIndices : Std.HashSet Nat) : Option Nat := do
+    (stableIndices : Std.HashSet Nat) (failedChanges : Std.HashSet String) : Option Nat := do
   -- Search from marker-1 down to 0
   for i in (List.range markerIdx).reverse do
     -- Skip stable indices
     if stableIndices.contains i then
+      continue
+    -- Skip already-failed expansions
+    if failedChanges.contains (attrExpansionKey i) then
       continue
     let some step := steps[i]?
       | continue
@@ -379,7 +385,7 @@ def attributeExpansionPass : Pass where
       computeStableIndices ctx.subprocessCommands ctx.stableSections ctx.markerIdx ctx.topmostEndIdx
 
     -- Find the last command with a generative attribute
-    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx stableIndices
+    let some cmdIdx := findLastGenerativeAttrCmd ctx.steps ctx.markerIdx stableIndices ctx.failedChanges
       | do
         if ctx.verbose then
           IO.eprintln s!"  No generative attributes found"
@@ -503,11 +509,13 @@ def attributeExpansionPass : Pass where
           for line in simpleError.splitOn "\n" do
             if !line.isEmpty then
               IO.eprintln s!"      {line}"
+          -- The attribute cannot be removed without breaking the marker behavior.
+          -- This means the attribute is actually needed for the bug reproduction.
+          -- Add to failed changes so we don't try again, and repeat to try other attributes.
           IO.eprintln ""
-          IO.eprintln "FATAL: Could not expand generative attribute."
-          IO.eprintln "The minimizer cannot continue because dependency analysis will be incorrect."
-          IO.eprintln "Please investigate the generated declarations above and fix the issue."
-          return { source := ctx.source, changed := false, action := .fatal }
+          IO.eprintln "    Skipping: attribute cannot be removed without breaking marker behavior"
+          return { source := ctx.source, changed := false, action := .repeat,
+                   newFailedChanges := #[attrExpansionKey cmdIdx] }
     else
       return { source := ctx.source, changed := false, action := .continue }
 
