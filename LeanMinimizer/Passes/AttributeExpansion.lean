@@ -335,10 +335,13 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
     | .thmInfo _ => pure "sorry"  -- Proofs typically render as ⋯
     | _ => match info.value? with
       | some value =>
+        -- Use lambdaTelescope to strip lambda binders that correspond to the type binders
+        -- we already extracted with forallTelescope. This gives us the actual body.
+        let body ← lambdaTelescope value fun _ body => pure body
         let ppVal ← withOptions (fun o => o
             |>.setBool `pp.fullNames true
             |>.setBool `pp.universes false) do
-          let fmt ← Meta.ppExpr value
+          let fmt ← Meta.ppExpr body
           return fmt.pretty
         -- If the pretty-printed value contains ⋯ or other problematic syntax, use sorry
         if ppVal.containsSubstr "⋯" || ppVal.containsSubstr "sorryAx" then
