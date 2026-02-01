@@ -273,7 +273,36 @@ def getDeclKind (env : Environment) (info : ConstantInfo) : String :=
   -- For other kinds (inductive, ctor, rec, quot), fall back to def
   | _ => "def"
 
-/-- Pretty-print a constant as a declaration string.
+/-- Sanitize a name for use in generated code.
+    Hygienic names like `inst._@.32806514._hygCtx._hyg.19` need to be simplified. -/
+def sanitizeName (name : Name) : String :=
+  let s := name.toString
+  -- Check if name contains hygienic markers
+  if s.containsSubstr "._@" || s.containsSubstr "._hyg" then
+    -- Extract just the base name if possible
+    match name with
+    | .str _ base => if base.startsWith "_" then "_" else base
+    | _ => "_"
+  else if name.isAnonymous then "_"
+  else s
+
+/-- Format a binder for pretty-printing.
+    Converts `{x : T}` (implicit), `[x : T]` (instance), `(x : T)` (explicit) -/
+def ppBinder (name : Name) (type : Expr) (bi : BinderInfo) : MetaM String := do
+  let typeStr ← withOptions (fun o => o
+    |>.setBool `pp.fullNames true
+    |>.setBool `pp.universes false) do
+    let fmt ← Meta.ppExpr type
+    return fmt.pretty
+  let nameStr := sanitizeName name
+  match bi with
+  | .implicit => return s!"\{{nameStr} : {typeStr}}"
+  -- For instance parameters, omit the name entirely (just use [T])
+  | .instImplicit => return s!"[{typeStr}]"
+  | .strictImplicit => return s!"⦃{nameStr} : {typeStr}⦄"
+  | .default => return s!"({nameStr} : {typeStr})"
+
+/-- Pretty-print a constant as a declaration string with proper binders.
     Uses _root_.FullName to avoid namespace issues.
     If `attrs` is provided, prepends `@[attrs]` to the declaration. -/
 def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := none)
@@ -283,27 +312,33 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
 
   let kind := getDeclKind env info
 
-  -- Pretty-print the type
-  let typeStr ← withOptions (fun o => o
-    |>.setBool `pp.fullNames true
-    |>.setBool `pp.universes false) do
-    let fmt ← Meta.ppExpr info.type
-    return fmt.pretty
+  -- Use forallTelescope to extract binders and the result type
+  let (binderStrs, resultTypeStr) ← forallTelescope info.type fun xs resultType => do
+    let mut binders : Array String := #[]
+    for x in xs do
+      let localDecl ← x.fvarId!.getDecl
+      let binderStr ← ppBinder localDecl.userName localDecl.type localDecl.binderInfo
+      binders := binders.push binderStr
+    let resultStr ← withOptions (fun o => o
+      |>.setBool `pp.fullNames true
+      |>.setBool `pp.universes false) do
+      let fmt ← Meta.ppExpr resultType
+      return fmt.pretty
+    return (binders, resultStr)
 
-  -- Pretty-print the value if available
-  let valueStr ← match info.value? with
-    | some value => withOptions (fun o => o
-        |>.setBool `pp.fullNames true
-        |>.setBool `pp.universes false) do
-        let fmt ← Meta.ppExpr value
-        return fmt.pretty
-    | none => pure "sorry"
+  let bindersStr := if binderStrs.isEmpty then ""
+    else " " ++ " ".intercalate binderStrs.toList
+
+  -- For generated declarations, just use sorry as the body.
+  -- Trying to pretty-print the actual value can produce invalid code
+  -- (e.g., proofs rendered as ⋯ which is not valid Lean syntax).
+  let valueStr := "sorry"
 
   let attrPrefix := match attrs with
     | some a => s!"@[{a}] "
     | none => ""
 
-  return some s!"{attrPrefix}{kind} _root_.{name} : {typeStr} := {valueStr}"
+  return some s!"{attrPrefix}{kind} _root_.{name}{bindersStr} : {resultTypeStr} := {valueStr}"
 
 /-! ## The pass -/
 
@@ -328,25 +363,25 @@ def getDeclName? (stx : Syntax) : Option Name := do
   -- Try to find a declId in the syntax
   let inner := getInnerDecl? stx
   let inner ← inner
-  -- declId is usually at arg 1 for most declarations
+  -- Search for declId in the syntax tree
+  -- For most declarations, declId is a direct child
+  -- For instances, declId may be nested one level deeper (inside a wrapper node)
   for i in [:inner.getNumArgs] do
     let child := inner[i]!
+    -- Check direct child
     if child.isOfKind `Lean.Parser.Command.declId then
       if child.getNumArgs > 0 then
         let nameNode := child[0]!
         if nameNode.isIdent then
           return nameNode.getId
-  -- For instances: look for namedName (the optional instance name)
-  -- Instance syntax: `instance` optNamedName optDeclSig declVal
-  if inner.isOfKind `Lean.Parser.Command.instance then
-    -- The optional name is at args[1] (after `instance` keyword)
-    if inner.getNumArgs > 1 then
-      let optName := inner[1]!
-      -- optNamedName has structure: (ident (":" priority)?)?
-      if !optName.isNone && optName.getNumArgs > 0 then
-        let nameNode := optName[0]!
-        if nameNode.isIdent then
-          return nameNode.getId
+    -- Check one level deeper (for instances where declId is wrapped in a null node)
+    for j in [:child.getNumArgs] do
+      let grandchild := child[j]!
+      if grandchild.isOfKind `Lean.Parser.Command.declId then
+        if grandchild.getNumArgs > 0 then
+          let nameNode := grandchild[0]!
+          if nameNode.isIdent then
+            return nameNode.getId
   failure
 
 /-- Run a MetaM computation in IO with a given environment -/
