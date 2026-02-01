@@ -302,6 +302,46 @@ def ppBinder (name : Name) (type : Expr) (bi : BinderInfo) : MetaM String := do
   | .strictImplicit => return s!"⦃{nameStr} : {typeStr}⦄"
   | .default => return s!"({nameStr} : {typeStr})"
 
+/-- Replace `sorryAx ...` patterns with just `sorry`.
+    sorryAx appears as `sorryAx Type _` or `sorryAx (ComplexType ...)` in pretty-printed terms. -/
+def replaceSorryAx (s : String) : String := Id.run do
+  let mut result := s
+  -- Keep replacing until no more sorryAx patterns
+  while result.containsSubstr "sorryAx" do
+    -- Find the position of sorryAx by splitting
+    let parts := result.splitOn "sorryAx"
+    match parts with
+    | [] => break
+    | [_] => break
+    | before :: afterFirst :: afterRest =>
+      -- Find where this sorryAx expression ends in `afterFirst`
+      -- Skip whitespace and find the extent of the type argument
+      let mut endOffset := 0
+      let mut parenDepth := 0
+      let mut inType := false
+      for c in afterFirst.toList do
+        if c == ' ' && !inType && parenDepth == 0 then
+          endOffset := endOffset + 1
+          continue
+        inType := true
+        if c == '(' || c == '{' || c == '[' then
+          parenDepth := parenDepth + 1
+          endOffset := endOffset + 1
+        else if c == ')' || c == '}' || c == ']' then
+          if parenDepth == 0 then break  -- End of sorryAx expression
+          parenDepth := parenDepth - 1
+          endOffset := endOffset + 1
+        else if c == ' ' || c == ',' || c == '\n' then
+          if parenDepth == 0 then break  -- End of sorryAx expression
+          endOffset := endOffset + 1
+        else
+          endOffset := endOffset + 1
+      -- Replace this sorryAx occurrence with sorry
+      let remaining := (afterFirst.drop endOffset).toString ++
+        (if afterRest.isEmpty then "" else "sorryAx" ++ "sorryAx".intercalate afterRest)
+      result := before ++ "sorry" ++ remaining
+  return result
+
 /-- Pretty-print a constant as a declaration string with proper binders.
     Uses _root_.FullName to avoid namespace issues.
     If `attrs` is provided, prepends `@[attrs]` to the declaration. -/
@@ -330,7 +370,7 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
     else " " ++ " ".intercalate binderStrs.toList
 
   -- Try to pretty-print the actual value for defs.
-  -- For theorems, or if the value contains problematic syntax (like ⋯), use sorry.
+  -- For theorems, use sorry since proofs typically render as ⋯.
   let valueStr ← match info with
     | .thmInfo _ => pure "sorry"  -- Proofs typically render as ⋯
     | _ => match info.value? with
@@ -340,11 +380,16 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
         let body ← lambdaTelescope value fun _ body => pure body
         let ppVal ← withOptions (fun o => o
             |>.setBool `pp.fullNames true
-            |>.setBool `pp.universes false) do
+            |>.setBool `pp.universes false
+            |>.setBool `pp.proofs false) do
           let fmt ← Meta.ppExpr body
           return fmt.pretty
-        -- If the pretty-printed value contains ⋯ or other problematic syntax, use sorry
-        if ppVal.containsSubstr "⋯" || ppVal.containsSubstr "sorryAx" then
+        -- Replace ⋯ with sorry
+        let ppVal := ppVal.replace "⋯" "sorry"
+        -- Replace sorryAx patterns with sorry
+        let ppVal := replaceSorryAx ppVal
+        -- If it still contains problematic patterns, fall back to sorry
+        if ppVal.containsSubstr "_fvar" then
           pure "sorry"
         else
           pure ppVal
