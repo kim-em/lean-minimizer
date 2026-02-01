@@ -329,10 +329,23 @@ def ppConstantDecl (env : Environment) (name : Name) (attrs : Option String := n
   let bindersStr := if binderStrs.isEmpty then ""
     else " " ++ " ".intercalate binderStrs.toList
 
-  -- For generated declarations, just use sorry as the body.
-  -- Trying to pretty-print the actual value can produce invalid code
-  -- (e.g., proofs rendered as ⋯ which is not valid Lean syntax).
-  let valueStr := "sorry"
+  -- Try to pretty-print the actual value for defs.
+  -- For theorems, or if the value contains problematic syntax (like ⋯), use sorry.
+  let valueStr ← match info with
+    | .thmInfo _ => pure "sorry"  -- Proofs typically render as ⋯
+    | _ => match info.value? with
+      | some value =>
+        let ppVal ← withOptions (fun o => o
+            |>.setBool `pp.fullNames true
+            |>.setBool `pp.universes false) do
+          let fmt ← Meta.ppExpr value
+          return fmt.pretty
+        -- If the pretty-printed value contains ⋯ or other problematic syntax, use sorry
+        if ppVal.containsSubstr "⋯" || ppVal.containsSubstr "sorryAx" then
+          pure "sorry"
+        else
+          pure ppVal
+      | none => pure "sorry"
 
   let attrPrefix := match attrs with
     | some a => s!"@[{a}] "
