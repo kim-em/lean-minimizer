@@ -2,7 +2,7 @@
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
-[Pass 1] Running: Command Deletion
+[Pass 1] Running: Binary Deletion
   First candidate: [0] def base := 1
   Last candidate:  [9] def unrelated2 := unrelated1 * 2
   (allIndices: 10, frozenIndices: 0, originalIndices: 10)
@@ -27,40 +27,32 @@
   Testing: try remove [0]
     → Failed: must keep [0]
   Removed 5 of 10 candidate commands (9 tests)
-  Changes made, repeating pass
-[Pass 1] Running: Command Deletion
+  Changes made, moving to next pass
+[Pass 2] Running: Linear Deletion
   First candidate: [0] def base := 1
   Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
-  Testing: try remove [2, 3, 4] (keep [0, 1])
-    → Failed
-    Recursing into second half, then first half
-  Testing: try remove [3, 4] (keep [2])
-    → Failed
-    Recursing into second half, then first half
-  Testing: try remove [4] (keep [3])
-    → Failed
-    Single item in second half, continuing on first half
-  Testing: try remove [3]
-    → Failed: must keep [3]
-  Testing: try remove [2]
-    → Failed: must keep [2]
-  Testing: try remove [1] (keep [0])
-    → Failed
-    Single item in second half, continuing on first half
   Testing: try remove [0]
     → Failed: must keep [0]
-  Removed 0 of 5 candidate commands (8 tests)
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 0 of 5 candidate commands (6 tests)
   No changes, moving to next pass
-[Pass 2] Running: Empty Scope Removal
+[Pass 3] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 3] Running: Open Minimization
+[Pass 4] Running: Open Minimization
   No changes, moving to next pass
-[Pass 4] Running: Singleton Namespace Flattening
+[Pass 5] Running: Singleton Namespace Flattening
   No changes, moving to next pass
-[Pass 5] Running: Public Section Removal
+[Pass 6] Running: Public Section Removal
   No changes, moving to next pass
-[Pass 6] Running: Text Substitution
+[Pass 7] Running: Text Substitution
   Running text substitution mini-passes...
     Comment removal: found 1 potential replacements
       Applied all 1 replacements at once
@@ -70,7 +62,7 @@
 [Pass 0] Running: Module System Removal
   File does not use module system, skipping
   No changes, moving to next pass
-[Pass 1] Running: Command Deletion
+[Pass 1] Running: Binary Deletion
   First candidate: [0] def base := 1
   Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
@@ -94,36 +86,52 @@
     → Failed: must keep [0]
   Removed 0 of 5 candidate commands (8 tests)
   No changes, moving to next pass
-[Pass 2] Running: Empty Scope Removal
+[Pass 2] Running: Linear Deletion
+  First candidate: [0] def base := 1
+  Last candidate:  [4] def result2 := helper2 + 10
+  (allIndices: 5, frozenIndices: 0, originalIndices: 5)
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 0 of 5 candidate commands (6 tests)
   No changes, moving to next pass
-[Pass 3] Running: Open Minimization
+[Pass 3] Running: Empty Scope Removal
   No changes, moving to next pass
-[Pass 4] Running: Singleton Namespace Flattening
+[Pass 4] Running: Open Minimization
   No changes, moving to next pass
-[Pass 5] Running: Public Section Removal
+[Pass 5] Running: Singleton Namespace Flattening
   No changes, moving to next pass
-[Pass 6] Running: Text Substitution
+[Pass 6] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 7] Running: Text Substitution
   Running text substitution mini-passes...
   No text substitutions possible
   No changes, moving to next pass
-[Pass 7] Running: Structure Field Removal
+[Pass 8] Running: Structure Field Removal
   Looking for structure/class fields to remove...
   No changes, moving to next pass
-[Pass 8] Running: Extends Simplification
+[Pass 9] Running: Extends Simplification
   Looking for structures with extends clauses...
   No extends simplifications possible
   No changes, moving to next pass
-[Pass 9] Running: Attribute Expansion
+[Pass 10] Running: Attribute Expansion
   Looking for generative attributes...
   No generative attributes found
   No changes, moving to next pass
-[Pass 10] Running: Import Minimization
+[Pass 11] Running: Import Minimization
   No imports to minimize
   No changes, moving to next pass
-[Pass 11] Running: Import Inlining
+[Pass 12] Running: Import Inlining
   No imports to inline
   No changes, moving to next pass
-[Pass 12] Running: Clear Memory
+[Pass 13] Running: Clear Memory
   Memory is empty, no final sweep needed
   No changes, moving to next pass
 Output written to LeanMinimizerTest/Golden/DependencyHeuristic.out.lean
