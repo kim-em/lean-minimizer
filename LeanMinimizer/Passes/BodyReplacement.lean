@@ -178,7 +178,7 @@ def bodyReplacementPass : Pass where
 
       -- Phase 1: Try replacing entire body with sorry
       let newSource := replaceWithSorry currentSource startPos endPos
-      if ← testCompilesSubprocess newSource ctx.fileName then
+      if ← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain then
         if ctx.verbose then
           IO.eprintln s!"    Success: replaced entire body with sorry"
         currentSource := newSource
@@ -209,7 +209,7 @@ def bodyReplacementPass : Pass where
         if bodyIsSorry currentSource subStartPos subEndPos then
           continue
         let newSource := replaceWithSorry currentSource subStartPos subEndPos
-        if ← testCompilesSubprocess newSource ctx.fileName then
+        if ← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain then
           if ctx.verbose then
             IO.eprintln s!"    Success: replaced Prop subexpression with sorry"
           currentSource := newSource
@@ -233,7 +233,7 @@ def bodyReplacementPass : Pass where
             if bodyIsSorry currentSource fieldStartPos fieldEndPos then
               continue
             let newSource := replaceWithSorry currentSource fieldStartPos fieldEndPos
-            if ← testCompilesSubprocess newSource ctx.fileName then
+            if ← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain then
               if ctx.verbose then
                 IO.eprintln s!"    Success: replaced where-structure field with sorry"
               currentSource := newSource

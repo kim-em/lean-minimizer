@@ -1,0 +1,4 @@
+Cross-version minimization: primary toolchain must succeed, leanprover/lean4:v4.28.0-rc1 must fail
+Error: Initial file unexpectedly compiles under cross toolchain leanprover/lean4:v4.28.0-rc1.
+Cross-version minimization requires the file to compile under the primary
+toolchain but FAIL under the cross toolchain.

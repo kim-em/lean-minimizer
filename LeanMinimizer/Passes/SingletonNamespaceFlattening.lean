@@ -258,7 +258,7 @@ unsafe def singletonNamespaceFlatteningPass : Pass where
         return { source := ctx.source, changed := false, action := .continue }
       | some newSource =>
         -- Test if the new source compiles
-        if ← testCompilesSubprocess newSource ctx.fileName then
+        if ← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain then
           if ctx.verbose then
             IO.eprintln s!"  Flattened singleton namespace {nsName}"
           -- Use .repeat to run again for other singleton namespaces

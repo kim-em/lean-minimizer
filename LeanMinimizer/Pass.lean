@@ -85,6 +85,8 @@ structure PassContext where
   /-- Whether this is a complete sweep (process all including stable sections)
       or an unstable-only sweep (skip stable sections to save time). -/
   isCompleteSweep : Bool := true
+  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile -/
+  crossToolchain : Option String := none
 
 /-- Result of running a pass -/
 structure PassResult where
@@ -268,6 +270,7 @@ def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
     verbose := ctx.verbose
     testCount
     outputFile := ctx.outputFile
+    crossToolchain := ctx.crossToolchain
   }
 
 /-- Convert SubprocessPassResult to PassResult -/
@@ -301,7 +304,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     (outputFile : Option String := none)
     (completeSweepBudget : Float := 0.20)
     (initialStableSections : Std.HashSet String := {})
-    (initialTopmostEndIdx : Option Nat := none) : IO String := do
+    (initialTopmostEndIdx : Option Nat := none)
+    (crossToolchain : Option String := none) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -370,7 +374,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
       let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
-          stableSections isCompleteSweep topmostEndIdx
+          stableSections isCompleteSweep topmostEndIdx crossToolchain
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data
@@ -398,6 +402,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         stableSections
         topmostEndIdx
         isCompleteSweep
+        crossToolchain
       }
       pass.run ctx
 

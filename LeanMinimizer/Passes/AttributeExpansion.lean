@@ -570,7 +570,7 @@ def attributeExpansionPass : Pass where
       let newSource := before ++ newCmdSection ++ after
 
       -- Verify it compiles
-      let (success, errorOutput) ← testCompilesSubprocessWithError newSource ctx.fileName
+      let (success, errorOutput) ← testCompilesSubprocessWithError newSource ctx.fileName ctx.crossToolchain
       if success then
         if ctx.verbose then
           IO.eprintln s!"    Success: expanded attribute, added {generatedDecls.size} declarations"
@@ -596,7 +596,7 @@ def attributeExpansionPass : Pass where
 
         -- Try without the generated declarations (just strip the attribute)
         let simpleSource := before ++ strippedCmd ++ "\n" ++ after
-        let (simpleSuccess, simpleError) ← testCompilesSubprocessWithError simpleSource ctx.fileName
+        let (simpleSuccess, simpleError) ← testCompilesSubprocessWithError simpleSource ctx.fileName ctx.crossToolchain
         if simpleSuccess then
           IO.eprintln s!"    Partial success: stripped attribute only (generated decls had errors)"
           return { source := simpleSource, changed := true, action := .restart }

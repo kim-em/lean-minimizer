@@ -180,7 +180,7 @@ unsafe def openMinimizationPass : Pass where
             newCmdText ++
             String.Pos.Raw.extract currentSource ⟨pos + trimmedOriginal.rawEndPos.byteIdx⟩ currentSource.rawEndPos
 
-          if ← testCompilesSubprocess newSourceCandidate ctx.fileName then
+          if ← testCompilesSubprocess newSourceCandidate ctx.fileName ctx.crossToolchain then
             if ctx.verbose then
               IO.eprintln s!"    Removed '{arg}' from open command"
             currentSource := newSourceCandidate

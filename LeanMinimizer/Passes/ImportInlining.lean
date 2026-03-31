@@ -368,8 +368,9 @@ def buildInlinedSource
   return result
 
 /-- Test if a source string compiles successfully (using subprocess for memory isolation). -/
-def testSourceCompilesInline (source : String) (fileName : String) : IO Bool :=
-  testCompilesSubprocess source fileName
+def testSourceCompilesInline (source : String) (fileName : String)
+    (crossToolchain : Option String := none) : IO Bool :=
+  testCompilesSubprocess source fileName crossToolchain
 
 /-- Check if a line starts a trivial command (open, variable, set_option, attribute, comment).
     These are skipped when finding the temp marker for parsimonious restarts. -/
@@ -514,7 +515,8 @@ def findEnclosingDeclaration (lines : Array String) (errorLine : Nat)
        or delete entire declarations for other errors
     3. Test if the result compiles -/
 def tryFixInlinedBlock (source : String) (errorOutput : String) (fileName : String)
-    (moduleName : Name) (verbose : Bool) : IO (Option String) := do
+    (moduleName : Name) (verbose : Bool)
+    (crossToolchain : Option String := none) : IO (Option String) := do
   let mut currentSource := source
   let mut currentErrors := errorOutput
   -- Iterate: fix errors, recompile, fix new errors, until stable or we give up.
@@ -573,7 +575,7 @@ def tryFixInlinedBlock (source : String) (errorOutput : String) (fileName : Stri
       IO.eprintln s!"    Deleted {linesToDelete.size} lines, testing compilation..."
 
     -- Test if it compiles now
-    let (compiled, newErrors) ← testCompilesSubprocessWithError fixedSource fileName
+    let (compiled, newErrors) ← testCompilesSubprocessWithError fixedSource fileName crossToolchain
     if compiled then
       if verbose then
         IO.eprintln s!"    Recovery successful!"
@@ -659,7 +661,7 @@ unsafe def importInliningPass : Pass where
                                               commandsPart stripModifiers
 
           -- Test compilation (capture error output for recovery)
-          let (compiled, errorOutput) ← testCompilesSubprocessWithError newSource ctx.fileName
+          let (compiled, errorOutput) ← testCompilesSubprocessWithError newSource ctx.fileName ctx.crossToolchain
           if compiled then
             if ctx.verbose then
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
@@ -667,7 +669,7 @@ unsafe def importInliningPass : Pass where
           else
             -- Compilation failed - try to fix by removing problematic declarations/fields
             if let some fixedSource ← tryFixInlinedBlock newSource errorOutput ctx.fileName
-                                        imp.moduleName ctx.verbose then
+                                        imp.moduleName ctx.verbose ctx.crossToolchain then
               if ctx.verbose then
                 IO.eprintln s!"    Successfully inlined {imp.moduleName} (with error recovery)"
               return { source := fixedSource, changed := true, action := .restart }
