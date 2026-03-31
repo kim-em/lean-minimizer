@@ -6,6 +6,8 @@ import LeanMinimizerTest.Golden.AttributeExpansion.MockToDual
 import LeanMinimizerTest.Golden.BodyReplacementInlined.B
 import LeanMinimizerTest.Golden.BodyReplacementInlined.C
 import LeanMinimizerTest.Golden.ImportInlining.Simple
+import LeanMinimizerTest.Golden.ImportInliningBlockComment.Module
+import LeanMinimizerTest.Golden.ImportInliningMutual.Module
 import LeanMinimizerTest.Golden.ImportInliningPublicMetaSection.Module
 import LeanMinimizerTest.Golden.ImportInliningPublicSection.Module
 import LeanMinimizerTest.Golden.ImportInliningComplex.A
