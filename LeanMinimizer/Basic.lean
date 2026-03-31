@@ -100,8 +100,7 @@ Options:
   --only-<PASS>
     Run only the specified pass once. Available passes:
       --only-module-removal    Module system removal
-      --only-delete            Binary command deletion
-      --only-linear-delete     Linear command deletion (one at a time)
+      --only-delete            Command deletion
       --only-empty-scope       Empty scope removal
       --only-sorry             Body replacement (sorry)
       --only-text-subst        Text substitution
@@ -194,7 +193,6 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-field-removal" :: rest => go rest { acc with noFieldRemoval := true }
     | "--no-extends" :: rest => go rest { acc with noExtendsSimplification := true }
     | "--only-delete" :: rest => go rest { acc with onlyPass := some "delete" }
-    | "--only-linear-delete" :: rest => go rest { acc with onlyPass := some "linear-delete" }
     | "--only-module-removal" :: rest => go rest { acc with onlyPass := some "module-removal" }
     | "--only-sorry" :: rest => go rest { acc with onlyPass := some "body-replacement" }
     | "--only-import-minimization" :: rest => go rest { acc with onlyPass := some "import-minimization" }

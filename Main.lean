@@ -173,8 +173,7 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
   ("module-removal", moduleRemovalPass),
-  ("delete", binaryDeletionPass),
-  ("linear-delete", linearDeletionPass),
+  ("delete", deletionPass),
   ("empty-scope", emptyScopeRemovalPass),
   ("open-minimization", openMinimizationPass),
   ("singleton-ns", singletonNamespaceFlatteningPass),
@@ -190,7 +189,7 @@ unsafe def allPasses : Array (String × Pass) := #[
 ]
 
 /-- Build the list of passes based on command line arguments.
-    Pass order: Module Removal → Binary Deletion → Linear Deletion → Empty Scope Removal → Open Minimization → Singleton Namespace Flattening → Public Section Removal → Body Replacement → Text Substitution → Structure Field Removal → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining → Clear Memory -/
+    Pass order: Module Removal → Deletion → Empty Scope Removal → Open Minimization → Singleton Namespace Flattening → Public Section Removal → Body Replacement → Text Substitution → Structure Field Removal → Extends Simplification → Attribute Expansion → Import Minimization → Import Inlining → Clear Memory -/
 unsafe def buildPassList (args : Args) : Array Pass :=
   -- If --only-X is specified, run only that pass
   if let some passName := args.onlyPass then
@@ -203,8 +202,7 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     -- Normal mode: build pass list based on --no-X flags
     #[]
     |> (if args.noModuleRemoval then id else (·.push moduleRemovalPass))
-    |> (if args.noDelete then id else (·.push binaryDeletionPass))
-    |> (if args.noDelete then id else (·.push linearDeletionPass))
+    |> (if args.noDelete then id else (·.push deletionPass))
     |> (if args.noDelete then id else (·.push emptyScopeRemovalPass))  -- Only run if deletion is enabled
     |> (if args.noDelete then id else (·.push openMinimizationPass))  -- Only run if deletion is enabled
     |> (if args.noDelete then id else (·.push singletonNamespaceFlatteningPass))  -- Only run if deletion is enabled
