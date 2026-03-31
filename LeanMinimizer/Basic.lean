@@ -100,7 +100,8 @@ Options:
   --only-<PASS>
     Run only the specified pass once. Available passes:
       --only-module-removal    Module system removal
-      --only-delete            Command deletion
+      --only-delete            Binary command deletion
+      --only-linear-delete     Linear command deletion (one at a time)
       --only-empty-scope       Empty scope removal
       --only-sorry             Body replacement (sorry)
       --only-text-subst        Text substitution
@@ -193,6 +194,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--no-field-removal" :: rest => go rest { acc with noFieldRemoval := true }
     | "--no-extends" :: rest => go rest { acc with noExtendsSimplification := true }
     | "--only-delete" :: rest => go rest { acc with onlyPass := some "delete" }
+    | "--only-linear-delete" :: rest => go rest { acc with onlyPass := some "linear-delete" }
     | "--only-module-removal" :: rest => go rest { acc with onlyPass := some "module-removal" }
     | "--only-sorry" :: rest => go rest { acc with onlyPass := some "body-replacement" }
     | "--only-import-minimization" :: rest => go rest { acc with onlyPass := some "import-minimization" }
@@ -690,6 +692,37 @@ unsafe def binaryDelete (heuristic : SplitHeuristic) (state : MinState) (candida
   let allIndices := Array.range state.markerIdx
   let finalKept ← binaryDeleteCore heuristic state candidates allIndices
   -- Return only the candidates that were kept (filter out non-candidate indices like scopes)
+  return finalKept.filter (candidates.contains ·)
+
+/-- Linear deletion: try removing each candidate one at a time.
+    Simpler and more predictable than binary deletion — O(N) compile tests per pass.
+    Better than binary deletion when most commands are needed (common after the
+    initial binary pass has already removed the bulk). -/
+unsafe def linearDeleteCore (state : MinState)
+    (candidates : Array Nat) (currentlyKept : Array Nat) : IO (Array Nat) := do
+  let mut kept := currentlyKept
+  for idx in candidates do
+    let withoutThis := kept.filter (· != idx)
+    if state.verbose then
+      IO.eprintln s!"  Testing: try remove [{idx}]"
+    if (← testCompiles state withoutThis) then
+      if state.verbose then
+        IO.eprintln s!"    → Success: removed [{idx}]"
+      writeProgress state withoutThis
+      kept := withoutThis
+    else
+      if state.verbose then
+        IO.eprintln s!"    → Failed: must keep [{idx}]"
+  return kept
+
+/-- Linear deletion: try removing each candidate one at a time.
+    Entry point that sets up initial state.
+
+    Returns: the indices that must be kept (subset of candidates) -/
+unsafe def linearDelete (state : MinState) (candidates : Array Nat) :
+    IO (Array Nat) := do
+  let allIndices := Array.range state.markerIdx
+  let finalKept ← linearDeleteCore state candidates allIndices
   return finalKept.filter (candidates.contains ·)
 
 /-- Create a split heuristic that uses pre-computed reachability data.
