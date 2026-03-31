@@ -178,12 +178,64 @@ def stripAttributesAndModifiers (line : String) : String := Id.run do
 
   return s
 
+/-- Strip block comments and line comments from source text, preserving newlines.
+    Handles nested block comments (`/- /- ... -/ -/`).
+    This ensures that scope keywords inside comments are not incorrectly counted. -/
+def stripComments (s : String) : String := Id.run do
+  let chars := s.toList.toArray
+  let mut result := ""
+  let mut i := 0
+  let mut depth : Nat := 0  -- Block comment nesting depth
+  let mut inLineComment := false
+  while i < chars.size do
+    let c := chars[i]!
+    if inLineComment then
+      if c == '\n' then
+        inLineComment := false
+        result := result.push '\n'
+      i := i + 1
+    else if depth > 0 then
+      -- Inside block comment: look for nested /- or closing -/
+      if c == '/' && i + 1 < chars.size && chars[i + 1]! == '-' then
+        depth := depth + 1
+        i := i + 2
+      else if c == '-' && i + 1 < chars.size && chars[i + 1]! == '/' then
+        depth := depth - 1
+        i := i + 2
+      else
+        -- Preserve newlines to maintain line structure
+        if c == '\n' then result := result.push '\n'
+        i := i + 1
+    else
+      -- Outside any comment
+      if c == '/' && i + 1 < chars.size && chars[i + 1]! == '-' then
+        depth := depth + 1
+        i := i + 2
+      else if c == '-' && i + 1 < chars.size && chars[i + 1]! == '-' then
+        inLineComment := true
+        i := i + 2
+      else
+        result := result.push c
+        i := i + 1
+  return result
+
+/-- Sentinel value used internally to track `mutual` blocks on the scope stack,
+    so that the `end` for a `mutual` block doesn't incorrectly consume a
+    section/namespace entry. -/
+private def mutualSentinel : String := "⟨mutual⟩"
+
 /-- Track open scopes from source text (without parsing).
     Uses simple text matching for namespace/section/end keywords.
-    Returns array of scope names that need end statements. -/
+    Returns array of scope names that need end statements.
+
+    Handles:
+    - Block comments (nested) and line comments are stripped first
+    - `mutual...end` blocks tracked so their `end` doesn't consume section/namespace -/
 def trackOpenScopesFromText (body : String) : Array String := Id.run do
+  -- Strip comments first to avoid false matches inside comments
+  let cleanBody := stripComments body
   let mut scopeStack : Array String := #[]
-  let lines := body.splitOn "\n"
+  let lines := cleanBody.splitOn "\n"
 
   for line in lines do
     let trimmed := line.trimAsciiStart.toString
@@ -207,12 +259,16 @@ def trackOpenScopesFromText (body : String) : Array String := Id.run do
       let rest := (stripped.drop 8).trimAsciiStart.toString
       let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
       scopeStack := scopeStack.push ident
+    -- Check for mutual (track so its 'end' doesn't consume section/namespace entries)
+    else if stripped == "mutual" then
+      scopeStack := scopeStack.push mutualSentinel
     -- Check for end
     else if stripped.startsWith "end " || stripped == "end" then
       if !scopeStack.isEmpty then
         scopeStack := scopeStack.pop
 
-  return scopeStack
+  -- Filter out mutual sentinels - only return section/namespace scopes
+  return scopeStack.filter (· != mutualSentinel)
 
 /-- Analyze a module file for inlining WITHOUT elaboration.
     Returns: (header syntax, body content, open scopes at end) -/
