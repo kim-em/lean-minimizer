@@ -178,18 +178,31 @@ def stripAttributesAndModifiers (line : String) : String := Id.run do
 
   return s
 
-/-- Strip block comments and line comments from source text, preserving newlines.
-    Handles nested block comments (`/- /- ... -/ -/`).
-    This ensures that scope keywords inside comments are not incorrectly counted. -/
+/-- Strip block comments, line comments, and string literals from source text,
+    preserving newlines. Handles nested block comments (`/- /- ... -/ -/`).
+    This ensures that scope keywords inside comments or strings are not
+    incorrectly counted. -/
 def stripComments (s : String) : String := Id.run do
   let chars := s.toList.toArray
   let mut result := ""
   let mut i := 0
   let mut depth : Nat := 0  -- Block comment nesting depth
   let mut inLineComment := false
+  let mut inString := false  -- Inside a string literal
   while i < chars.size do
     let c := chars[i]!
-    if inLineComment then
+    if inString then
+      -- Inside string literal: look for closing quote or escape
+      if c == '\\' && i + 1 < chars.size then
+        -- Skip escaped character
+        i := i + 2
+      else if c == '"' then
+        inString := false
+        i := i + 1
+      else
+        if c == '\n' then result := result.push '\n'
+        i := i + 1
+    else if inLineComment then
       if c == '\n' then
         inLineComment := false
         result := result.push '\n'
@@ -207,8 +220,11 @@ def stripComments (s : String) : String := Id.run do
         if c == '\n' then result := result.push '\n'
         i := i + 1
     else
-      -- Outside any comment
-      if c == '/' && i + 1 < chars.size && chars[i + 1]! == '-' then
+      -- Outside any comment or string
+      if c == '"' then
+        inString := true
+        i := i + 1
+      else if c == '/' && i + 1 < chars.size && chars[i + 1]! == '-' then
         depth := depth + 1
         i := i + 2
       else if c == '-' && i + 1 < chars.size && chars[i + 1]! == '-' then
@@ -260,7 +276,8 @@ def trackOpenScopesFromText (body : String) : Array String := Id.run do
       let ident := (rest.takeWhile (fun c => c.isAlphanum || c == '_' || c == '.')).toString
       scopeStack := scopeStack.push ident
     -- Check for mutual (track so its 'end' doesn't consume section/namespace entries)
-    else if stripped == "mutual" then
+    -- Use trimAscii to handle trailing whitespace left after comment stripping
+    else if stripped.trimAscii.toString == "mutual" then
       scopeStack := scopeStack.push mutualSentinel
     -- Check for end
     else if stripped.startsWith "end " || stripped == "end" then
