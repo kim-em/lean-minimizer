@@ -8,7 +8,17 @@ import LeanMinimizer.Pass
 /-!
 # Command Deletion Pass
 
-This pass removes unnecessary commands using binary deletion.
+This pass removes unnecessary commands using a two-phase strategy:
+
+1. **Binary deletion**: Uses binary search to quickly remove large blocks of commands.
+   Most effective right after import inlining brings in a large chunk of new code.
+
+2. **Linear deletion**: Tries removing each remaining command one at a time.
+   More efficient than binary deletion when most commands are needed, since it avoids
+   the overhead of testing large block removals that will fail.
+
+Both phases run within a single pass invocation (sharing setup and elaboration),
+then the pass returns `.repeat` to allow further cleanup with fresh elaboration data.
 -/
 
 namespace LeanMinimizer
@@ -24,9 +34,11 @@ def isScopeCommand (stx : Syntax) : Bool :=
 
 /-- The command deletion pass.
 
-    Uses binary deletion to find a minimal set of commands needed before the marker.
+    Uses a two-phase strategy:
+    1. Binary deletion to quickly remove large blocks (effective after import inlining)
+    2. Linear deletion to clean up remaining commands one at a time
 
-    Note: section, namespace, and end commands are excluded from deletion to prevent
+    Section, namespace, and end commands are excluded from deletion to prevent
     silently changing the scoping semantics. A separate pass handles removing empty
     scope pairs. -/
 unsafe def deletionPass : Pass where
@@ -78,15 +90,30 @@ unsafe def deletionPass : Pass where
     if !(← testCompiles state originalIndices) then
       throw <| IO.userError "Source does not compile"
 
-    -- Run binary deletion
-    -- Note: keptIndices will only contain non-scope commands, but we need to
-    -- add back the scope commands that were excluded from deletion
     let scopeIndices := (Array.range ctx.markerIdx).filter fun idx =>
       if h : idx < ctx.steps.size then
         isScopeCommand ctx.steps[idx].stx
       else
         false
-    let keptNonScopeIndices ← binaryDelete defaultSplitHeuristic state allIndices
+
+    -- Phase 1: Binary deletion to quickly remove large blocks.
+    -- Uses binaryDeleteCore directly so we can thread state to phase 2.
+    let initialKept := Array.range ctx.markerIdx
+    if ctx.verbose then
+      IO.eprintln s!"  Phase 1: Binary deletion on {allIndices.size} candidates"
+    let afterBinary ← binaryDeleteCore defaultSplitHeuristic state allIndices initialKept
+
+    -- Phase 2: Linear deletion on surviving candidates.
+    -- Threads the kept-set from binary deletion so removals are preserved.
+    let survivingCandidates := allIndices.filter (afterBinary.contains ·)
+    if ctx.verbose then
+      let binaryRemoved := allIndices.size - survivingCandidates.size
+      IO.eprintln s!"  Phase 2: Linear deletion on {survivingCandidates.size} surviving candidates ({binaryRemoved} removed by binary)"
+    let afterLinear ← linearDeleteCore state survivingCandidates afterBinary
+
+    -- Extract kept non-scope candidates
+    let keptNonScopeIndices := afterLinear.filter (allIndices.contains ·)
+
     -- Combine kept non-scope indices with all scope indices and frozen indices
     -- Deduplicate because scopeIndices and frozenIndices may overlap
     let keptIndices := (keptNonScopeIndices ++ scopeIndices ++ frozenIndices).toList

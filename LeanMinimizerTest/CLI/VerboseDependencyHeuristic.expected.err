@@ -6,6 +6,7 @@
   First candidate: [0] def base := 1
   Last candidate:  [9] def unrelated2 := unrelated1 * 2
   (allIndices: 10, frozenIndices: 0, originalIndices: 10)
+  Phase 1: Binary deletion on 10 candidates
   Testing: try remove [5, 6, 7, 8, 9] (keep [0, 1, 2, 3, 4])
     → Success: removed [5, 6, 7, 8, 9], continuing on [0, 1, 2, 3, 4]
   Testing: try remove [2, 3, 4] (keep [0, 1])
@@ -26,12 +27,24 @@
     Single item in second half, continuing on first half
   Testing: try remove [0]
     → Failed: must keep [0]
-  Removed 5 of 10 candidate commands (9 tests)
+  Phase 2: Linear deletion on 5 surviving candidates (5 removed by binary)
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 5 of 10 candidate commands (14 tests)
   Changes made, repeating pass
 [Pass 1] Running: Command Deletion
   First candidate: [0] def base := 1
   Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
+  Phase 1: Binary deletion on 5 candidates
   Testing: try remove [2, 3, 4] (keep [0, 1])
     → Failed
     Recursing into second half, then first half
@@ -50,7 +63,18 @@
     Single item in second half, continuing on first half
   Testing: try remove [0]
     → Failed: must keep [0]
-  Removed 0 of 5 candidate commands (8 tests)
+  Phase 2: Linear deletion on 5 surviving candidates (0 removed by binary)
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 0 of 5 candidate commands (13 tests)
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass
@@ -74,6 +98,7 @@
   First candidate: [0] def base := 1
   Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
+  Phase 1: Binary deletion on 5 candidates
   Testing: try remove [2, 3, 4] (keep [0, 1])
     → Failed
     Recursing into second half, then first half
@@ -92,7 +117,18 @@
     Single item in second half, continuing on first half
   Testing: try remove [0]
     → Failed: must keep [0]
-  Removed 0 of 5 candidate commands (8 tests)
+  Phase 2: Linear deletion on 5 surviving candidates (0 removed by binary)
+  Testing: try remove [0]
+    → Failed: must keep [0]
+  Testing: try remove [1]
+    → Failed: must keep [1]
+  Testing: try remove [2]
+    → Failed: must keep [2]
+  Testing: try remove [3]
+    → Failed: must keep [3]
+  Testing: try remove [4]
+    → Failed: must keep [4]
+  Removed 0 of 5 candidate commands (13 tests)
   No changes, moving to next pass
 [Pass 2] Running: Empty Scope Removal
   No changes, moving to next pass

@@ -692,6 +692,37 @@ unsafe def binaryDelete (heuristic : SplitHeuristic) (state : MinState) (candida
   -- Return only the candidates that were kept (filter out non-candidate indices like scopes)
   return finalKept.filter (candidates.contains ·)
 
+/-- Linear deletion: try removing each candidate one at a time.
+    Simpler and more predictable than binary deletion — O(N) compile tests per pass.
+    Better than binary deletion when most commands are needed (common after the
+    initial binary pass has already removed the bulk). -/
+unsafe def linearDeleteCore (state : MinState)
+    (candidates : Array Nat) (currentlyKept : Array Nat) : IO (Array Nat) := do
+  let mut kept := currentlyKept
+  for idx in candidates do
+    let withoutThis := kept.filter (· != idx)
+    if state.verbose then
+      IO.eprintln s!"  Testing: try remove [{idx}]"
+    if (← testCompiles state withoutThis) then
+      if state.verbose then
+        IO.eprintln s!"    → Success: removed [{idx}]"
+      writeProgress state withoutThis
+      kept := withoutThis
+    else
+      if state.verbose then
+        IO.eprintln s!"    → Failed: must keep [{idx}]"
+  return kept
+
+/-- Linear deletion: try removing each candidate one at a time.
+    Entry point that sets up initial state.
+
+    Returns: the indices that must be kept (subset of candidates) -/
+unsafe def linearDelete (state : MinState) (candidates : Array Nat) :
+    IO (Array Nat) := do
+  let allIndices := Array.range state.markerIdx
+  let finalKept ← linearDeleteCore state candidates allIndices
+  return finalKept.filter (candidates.contains ·)
+
 /-- Create a split heuristic that uses pre-computed reachability data.
     Commands not in `reachable` are tried for removal first.
 
