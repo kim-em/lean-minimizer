@@ -54,7 +54,8 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
-    (topmostEndIdx : Option Nat := none) : IO Unit := do
+    (topmostEndIdx : Option Nat := none)
+    (crossToolchain : Option String := none) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -87,6 +88,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     stableSections
     topmostEndIdx
     isCompleteSweep
+    crossToolchain
   }
 
   -- Run the pass
@@ -112,9 +114,11 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
     (failedChanges : Std.HashSet String := {})
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
-    (topmostEndIdx : Option Nat := none) : IO UInt32 := do
+    (topmostEndIdx : Option Nat := none)
+    (crossToolchain : Option String := none) : IO UInt32 := do
   try
-    runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep topmostEndIdx
+    runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep
+      topmostEndIdx crossToolchain
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -127,7 +131,8 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     (memoryFile : Option String := none)
     (stableFile : Option String := none)
     (isCompleteSweep : Bool := true)
-    (topmostEndIdx : Option Nat := none) : IO UInt32 := do
+    (topmostEndIdx : Option Nat := none)
+    (crossToolchain : Option String := none) : IO UInt32 := do
   initSearchPath (← findSysroot)
 
   -- Read failedChanges from memory file if provided
@@ -168,7 +173,8 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     IO.eprintln s!"Unknown pass: {passName}"
     return 1
   | some (_, pass) =>
-    runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep topmostEndIdx
+    runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep
+      topmostEndIdx crossToolchain
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -216,9 +222,20 @@ unsafe def buildPassList (args : Args) : Array Pass :=
     |> (if args.noImportInlining then id else (·.push importInliningPass))
     |> (·.push clearMemoryPass)  -- Always run clear memory pass at the end
 
+/-- Parsed --run-pass arguments -/
+structure RunPassArgs where
+  passName : String
+  file : String
+  marker : String
+  verbose : Bool
+  memoryFile : Option String
+  stableFile : Option String
+  isCompleteSweep : Bool
+  topmostEndIdx : Option Nat
+  crossToolchain : Option String
+
 /-- Parse --run-pass arguments flexibly (handles any order of optional flags) -/
-def parseRunPassArgs (args : List String) :
-    Option (String × String × String × Bool × Option String × Option String × Bool × Option Nat) := do
+def parseRunPassArgs (args : List String) : Option RunPassArgs := do
   match args with
   | "--run-pass" :: passName :: file :: rest =>
     let mut marker : Option String := none
@@ -227,6 +244,7 @@ def parseRunPassArgs (args : List String) :
     let mut stableFile : Option String := none
     let mut isCompleteSweep := true
     let mut topmostEndIdx : Option Nat := none
+    let mut crossToolchain : Option String := none
     let mut remaining := rest
     while !remaining.isEmpty do
       match remaining with
@@ -236,13 +254,15 @@ def parseRunPassArgs (args : List String) :
       | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
       | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
       | "--topmost-end-idx" :: idx :: tail => topmostEndIdx := idx.toNat?; remaining := tail
+      | "--cross-toolchain" :: tc :: tail => crossToolchain := some tc; remaining := tail
       | [] => remaining := []  -- Exit while loop
       | unknown :: _ =>
           -- Log warning for unexpected args (shouldn't happen with internal subprocess calls)
           dbg_trace s!"Warning: Unknown --run-pass argument: {unknown}. Ignoring remaining args."
           remaining := []
     let m ← marker
-    return (passName, file, m, verbose, memoryFile, stableFile, isCompleteSweep, topmostEndIdx)
+    return { passName, file, marker := m, verbose, memoryFile, stableFile,
+             isCompleteSweep, topmostEndIdx, crossToolchain }
   | _ => none
 
 /-- Entry point -/
@@ -254,9 +274,10 @@ unsafe def main (args : List String) : IO UInt32 := do
   | ["--analyze", file] => return ← handleAnalyze file
   | _ =>
     -- Try to parse as --run-pass command
-    if let some (passName, file, marker, verbose, memoryFile, stableFile, isCompleteSweep, topmostEndIdx) :=
-        parseRunPassArgs args then
-      return ← handleRunPass passName file marker verbose memoryFile stableFile isCompleteSweep topmostEndIdx
+    if let some rpArgs := parseRunPassArgs args then
+      return ← handleRunPass rpArgs.passName rpArgs.file rpArgs.marker rpArgs.verbose
+        rpArgs.memoryFile rpArgs.stableFile rpArgs.isCompleteSweep rpArgs.topmostEndIdx
+        rpArgs.crossToolchain
     else
       pure ()
 
@@ -317,9 +338,34 @@ unsafe def main (args : List String) : IO UInt32 := do
           if parsedArgs.verbose then
             IO.eprintln s!"  No section found, processing entire file"
 
+      -- Validate cross-toolchain setup if specified
+      if let some tc := parsedArgs.crossToolchain then
+        if parsedArgs.verbose then
+          IO.eprintln s!"Cross-version minimization: primary toolchain must succeed, {tc} must fail"
+        -- Verify the cross toolchain can actually be resolved by elan
+        let elanCheck ← IO.Process.output {
+          cmd := "elan"
+          args := #["run", "--install", tc, "lean", "--version"]
+        }
+        if elanCheck.exitCode != 0 then
+          throw <| IO.userError s!"Cross toolchain '{tc}' could not be resolved.\n\
+            Make sure it is installed (e.g. elan toolchain install {tc}).\n\
+            Error: {elanCheck.stderr.trimAscii}"
+        if parsedArgs.verbose then
+          IO.eprintln s!"  Cross toolchain OK"
+        -- Verify initial file compiles under primary
+        if !(← testCompilesSubprocess input inputFile) then
+          throw <| IO.userError "Initial file does not compile under the primary toolchain"
+        -- Verify initial file fails under cross toolchain
+        if !(← testFailsWithToolchain input inputFile tc) then
+          throw <| IO.userError s!"Initial file unexpectedly compiles under cross toolchain {tc}.\n\
+            Cross-version minimization requires the file to compile under the primary\n\
+            toolchain but FAIL under the cross toolchain."
+
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)
                      parsedArgs.completeSweepBudget initialStableSections initialTopmostEndIdx
+                     parsedArgs.crossToolchain
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>

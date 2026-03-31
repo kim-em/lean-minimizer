@@ -75,7 +75,7 @@ unsafe def moduleRemovalPass : Pass where
     let newSource := newHeader ++ commandsPart
 
     -- Test if it compiles
-    if !(← testCompilesSubprocess newSource ctx.fileName) then
+    if !(← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain) then
       if ctx.verbose then
         IO.eprintln "  Module removal failed (does not compile), keeping original"
       return { source := ctx.source, changed := false, action := .continue }

@@ -123,6 +123,8 @@ structure ImportMinState where
   fileName : String
   /-- Whether to print verbose output -/
   verbose : Bool
+  /-- Optional cross-toolchain for testing -/
+  crossToolchain : Option String := none
 
 /-- Test if keeping only the given indices (plus required imports) compiles -/
 def testImportsCompile (state : ImportMinState) (keepIndices : Array Nat) : IO Bool := do
@@ -134,7 +136,7 @@ def testImportsCompile (state : ImportMinState) (keepIndices : Array Nat) : IO B
       keptImports := keptImports.push imp
   let header := reconstructHeader state.usesModule state.hasPrelude keptImports state.stripModifiers
   let source := header ++ state.commandsPart
-  testCompilesSubprocess source state.fileName
+  testCompilesSubprocess source state.fileName state.crossToolchain
 
 /-- Delta debugging core for imports. End-biased: tries removing later imports first.
     Returns indices (into the candidates array) that must be kept. -/
@@ -289,6 +291,7 @@ unsafe def importMinimizationPass : Pass where
           required
           fileName := ctx.fileName
           verbose := ctx.verbose
+          crossToolchain := ctx.crossToolchain
         }
 
         -- Use ddmin for large sets, greedy for small
@@ -352,7 +355,7 @@ unsafe def importMinimizationPass : Pass where
             let newHeader := reconstructHeader usesModule hasPrelude newImports stripModifiers
             let newSource := newHeader ++ commandsPart
 
-            if ← testCompilesSubprocess newSource ctx.fileName then
+            if ← testCompilesSubprocess newSource ctx.fileName ctx.crossToolchain then
               if ctx.verbose then
                 IO.eprintln s!"    Replaced {imp.moduleName} with its imports"
               -- New imports are NOT in required, so they'll be tried for deletion

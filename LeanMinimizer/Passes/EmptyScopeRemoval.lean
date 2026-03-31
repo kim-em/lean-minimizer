@@ -231,7 +231,7 @@ unsafe def emptyScopeRemovalPass : Pass where
     let allRemovedSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos
         (stepsWithAllRemoved ++ stepsFromMarker)
 
-    if ← testCompilesSubprocess allRemovedSource ctx.fileName then
+    if ← testCompilesSubprocess allRemovedSource ctx.fileName ctx.crossToolchain then
       -- All removals succeeded
       if ctx.verbose then
         IO.eprintln s!"  Removed all {pairsToTry.size} pairs ({pairsToTry.size * 2} commands) at once"
@@ -256,7 +256,7 @@ unsafe def emptyScopeRemovalPass : Pass where
       let testSource := reconstructSourceFromSteps ctx.source ctx.headerEndPos
           (stepsWithOneRemoved ++ stepsFromMarker)
 
-      if ← testCompilesSubprocess testSource ctx.fileName then
+      if ← testCompilesSubprocess testSource ctx.fileName ctx.crossToolchain then
         if ctx.verbose then
           IO.eprintln s!"    Removed pair at position {pair.startPos}"
         currentSteps := stepsWithOneRemoved

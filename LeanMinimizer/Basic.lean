@@ -97,6 +97,19 @@ Options:
     as the input instead of the original file. This allows continuing an
     interrupted minimization.
 
+  --cross-toolchain <TOOLCHAIN>
+    Cross-version minimization. Specifies a second Lean toolchain (e.g.
+    leanprover/lean4:v4.27.0) where the file must FAIL to compile after
+    each minimization step. The primary toolchain (from lean-toolchain)
+    must succeed, and the cross toolchain must fail.
+
+    Use #guard_msgs to specify the desired behavior on the primary
+    toolchain. If the cross toolchain produces different output,
+    #guard_msgs will fail there automatically, which is exactly what
+    we want.
+
+    Uses ELAN_TOOLCHAIN to select the cross toolchain.
+
   --only-<PASS>
     Run only the specified pass once. Available passes:
       --only-module-removal    Module system removal
@@ -130,6 +143,16 @@ Tip: Use #guard_msgs to mark the section you want to preserve:
 
 This captures the exact error message, making it ideal for bug reports
 and regression tests.
+
+Cross-version minimization:
+  If a file behaves differently under two Lean versions, use
+  #guard_msgs to capture the behavior on the primary toolchain, then
+  pass --cross-toolchain to preserve the difference:
+
+  lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+
+  The minimizer will keep only commands needed for the file to compile
+  under the primary toolchain AND fail under the cross toolchain.
 "
 
 /-- Parsed command line arguments -/
@@ -162,6 +185,9 @@ structure Args where
   resume : Bool := false
   /-- Budget for complete sweeps as fraction of runtime (0.0-1.0, default 0.20) -/
   completeSweepBudget : Float := 0.20
+  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile.
+      This preserves the behavior difference between the primary and cross toolchains. -/
+  crossToolchain : Option String := none
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -203,6 +229,8 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | "--resume" :: rest => go rest { acc with resume := true }
+    | "--cross-toolchain" :: tc :: rest => go rest { acc with crossToolchain := some tc }
+    | "--cross-toolchain" :: [] => .error "--cross-toolchain requires an argument"
     | "--complete-sweep-budget" :: value :: rest =>
       -- Parse as percentage (0-100) and convert to fraction
       match value.toNat? with
@@ -270,6 +298,8 @@ structure MinState where
   testCount : IO.Ref Nat
   /-- Output file to write intermediate results to (optional) -/
   outputFile : Option String := none
+  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile -/
+  crossToolchain : Option String := none
 
 /-- A heuristic for splitting candidates during delta debugging.
 
@@ -450,9 +480,42 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
   result
 
+/-- Test if source FAILS to compile under a specific toolchain.
+    Used for cross-version minimization to verify the behavior difference is preserved.
+    Returns true if the file fails to compile (which is the desired outcome).
+    Uses `elan run --install` to ensure the correct toolchain is used without fallback. -/
+def testFailsWithToolchain (source : String) (fileName : String) (toolchain : String) : IO Bool := do
+  let baseName := (System.FilePath.mk fileName).fileName.getD "test"
+  let pid ← IO.Process.getPID
+  let tempDir ← getTempDir
+  let tempFile := tempDir / s!".lean-minimize-{pid}-cross-{baseName}"
+  IO.FS.writeFile tempFile source
+
+  let leanPath ← IO.getEnv "LEAN_PATH"
+
+  let env : Array (String × Option String) := #[
+    ("LEAN_PATH", leanPath),
+    ("LEAN_SYSROOT", none)
+  ]
+
+  let leanOptions ← getLeanOptionsForFile fileName
+
+  try
+    let result ← IO.Process.output {
+      cmd := "elan"
+      args := #["run", "--install", toolchain, "lean"] ++ leanOptions ++ #[tempFile.toString]
+      env := env
+    }
+    -- We want failure: exitCode != 0 means the behavior difference is preserved
+    return result.exitCode != 0
+  finally
+    try IO.FS.removeFile tempFile catch _ => pure ()
+
 /-- Test if source compiles by running lean in a subprocess.
-    This isolates memory usage - when the subprocess exits, all Lean caches are freed. -/
-def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
+    This isolates memory usage - when the subprocess exits, all Lean caches are freed.
+    When `crossToolchain` is set, also verifies the file FAILS under that toolchain. -/
+def testCompilesSubprocess (source : String) (fileName : String)
+    (crossToolchain : Option String := none) : IO Bool := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
@@ -481,12 +544,19 @@ def testCompilesSubprocess (source : String) (fileName : String) : IO Bool := do
       args := leanOptions ++ #[tempFile.toString]
       env := env
     }
-    return result.exitCode == 0
+    if result.exitCode != 0 then
+      return false
+    -- Primary check passed. Now do cross-toolchain check if configured.
+    match crossToolchain with
+    | none => return true
+    | some tc => testFailsWithToolchain source fileName tc
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
-/-- Check if source compiles using subprocess, returning error output if it fails -/
-def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (Bool × String) := do
+/-- Check if source compiles using subprocess, returning error output if it fails.
+    When `crossToolchain` is set, also verifies the file FAILS under that toolchain. -/
+def testCompilesSubprocessWithError (source : String) (fileName : String)
+    (crossToolchain : Option String := none) : IO (Bool × String) := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
@@ -518,7 +588,17 @@ def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (
     let success := result.exitCode == 0
     -- lean prints errors to stdout, so capture both
     let errorOutput := if success then "" else (result.stdout ++ result.stderr)
-    return (success, errorOutput)
+    if !success then
+      return (false, errorOutput)
+    -- Primary check passed. Now do cross-toolchain check if configured.
+    match crossToolchain with
+    | none => return (true, "")
+    | some tc =>
+      let crossFails ← testFailsWithToolchain source fileName tc
+      if crossFails then
+        return (true, "")
+      else
+        return (false, "Cross-toolchain check failed: file unexpectedly compiled under " ++ tc)
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
@@ -526,7 +606,7 @@ def testCompilesSubprocessWithError (source : String) (fileName : String) : IO (
 def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do
   state.testCount.modify (· + 1)
   let source := reconstructSource state keepIndices
-  testCompilesSubprocess source state.fileName
+  testCompilesSubprocess source state.fileName state.crossToolchain
 
 /-- Write current progress to the output file if configured -/
 def writeProgress (state : MinState) (keepIndices : Array Nat) : IO Unit := do
