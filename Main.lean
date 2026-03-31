@@ -342,6 +342,17 @@ unsafe def main (args : List String) : IO UInt32 := do
       if let some tc := parsedArgs.crossToolchain then
         if parsedArgs.verbose then
           IO.eprintln s!"Cross-version minimization: primary toolchain must succeed, {tc} must fail"
+        -- Verify the cross toolchain can actually be resolved by elan
+        let elanCheck ← IO.Process.output {
+          cmd := "elan"
+          args := #["run", "--install", tc, "lean", "--version"]
+        }
+        if elanCheck.exitCode != 0 then
+          throw <| IO.userError s!"Cross toolchain '{tc}' could not be resolved.\n\
+            Make sure it is installed (e.g. elan toolchain install {tc}).\n\
+            Error: {elanCheck.stderr.trimAscii}"
+        if parsedArgs.verbose then
+          IO.eprintln s!"  Cross toolchain OK"
         -- Verify initial file compiles under primary
         if !(← testCompilesSubprocess input inputFile) then
           throw <| IO.userError "Initial file does not compile under the primary toolchain"

@@ -100,9 +100,15 @@ Options:
   --cross-toolchain <TOOLCHAIN>
     Cross-version minimization. Specifies a second Lean toolchain (e.g.
     leanprover/lean4:v4.27.0) where the file must FAIL to compile after
-    each minimization step. This preserves the behavior difference between
-    the primary toolchain (which must succeed) and the cross toolchain
-    (which must fail). Uses ELAN_TOOLCHAIN to select the toolchain.
+    each minimization step. The primary toolchain (from lean-toolchain)
+    must succeed, and the cross toolchain must fail.
+
+    Use #guard_msgs to specify the desired behavior on the primary
+    toolchain. If the cross toolchain produces different output,
+    #guard_msgs will fail there automatically, which is exactly what
+    we want.
+
+    Uses ELAN_TOOLCHAIN to select the cross toolchain.
 
   --only-<PASS>
     Run only the specified pass once. Available passes:
@@ -137,6 +143,16 @@ Tip: Use #guard_msgs to mark the section you want to preserve:
 
 This captures the exact error message, making it ideal for bug reports
 and regression tests.
+
+Cross-version minimization:
+  If a file behaves differently under two Lean versions, use
+  #guard_msgs to capture the behavior on the primary toolchain, then
+  pass --cross-toolchain to preserve the difference:
+
+  lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+
+  The minimizer will keep only commands needed for the file to compile
+  under the primary toolchain AND fail under the cross toolchain.
 "
 
 /-- Parsed command line arguments -/
@@ -466,7 +482,8 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
 /-- Test if source FAILS to compile under a specific toolchain.
     Used for cross-version minimization to verify the behavior difference is preserved.
-    Returns true if the file fails to compile (which is the desired outcome). -/
+    Returns true if the file fails to compile (which is the desired outcome).
+    Uses `elan run --install` to ensure the correct toolchain is used without fallback. -/
 def testFailsWithToolchain (source : String) (fileName : String) (toolchain : String) : IO Bool := do
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
@@ -475,23 +492,18 @@ def testFailsWithToolchain (source : String) (fileName : String) (toolchain : St
   IO.FS.writeFile tempFile source
 
   let leanPath ← IO.getEnv "LEAN_PATH"
-  let path ← IO.getEnv "PATH"
 
-  -- Set ELAN_TOOLCHAIN to override the toolchain. Do NOT set LEAN_SYSROOT
-  -- so that elan resolves the correct sysroot for the cross toolchain.
   let env : Array (String × Option String) := #[
-    ("ELAN_TOOLCHAIN", some toolchain),
     ("LEAN_PATH", leanPath),
-    ("LEAN_SYSROOT", none),
-    ("PATH", path)
+    ("LEAN_SYSROOT", none)
   ]
 
   let leanOptions ← getLeanOptionsForFile fileName
 
   try
     let result ← IO.Process.output {
-      cmd := "lean"
-      args := leanOptions ++ #[tempFile.toString]
+      cmd := "elan"
+      args := #["run", "--install", toolchain, "lean"] ++ leanOptions ++ #[tempFile.toString]
       env := env
     }
     -- We want failure: exitCode != 0 means the behavior difference is preserved
