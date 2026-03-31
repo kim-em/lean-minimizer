@@ -154,15 +154,63 @@ def skipWhitespace (source : String) (pos : Nat) : Nat :=
       else p
   loop pos
 
+/-- Skip a string literal starting at the opening `"`. Returns position after closing `"`. -/
+partial def skipStringLiteral (source : String) (pos : Nat) : Nat :=
+  let endPos := source.rawEndPos.byteIdx
+  -- pos is at the opening "
+  let rec loop (p : Nat) : Nat :=
+    if p >= endPos then p
+    else
+      let c := String.Pos.Raw.get source ⟨p⟩
+      if c == '\\' && p + 1 < endPos then loop (p + 2)
+      else if c == '"' then p + 1
+      else loop (p + 1)
+  loop (pos + 1)
+
+/-- Skip a block comment starting at `/-`. Returns position after closing `-/`. -/
+partial def skipBlockComment (source : String) (pos : Nat) : Nat :=
+  let endPos := source.rawEndPos.byteIdx
+  -- pos is at the '/'
+  let rec loop (p : Nat) (depth : Nat) : Nat :=
+    if p >= endPos then p
+    else if p + 1 < endPos then
+      let c1 := String.Pos.Raw.get source ⟨p⟩
+      let c2 := String.Pos.Raw.get source ⟨p + 1⟩
+      if c1 == '/' && c2 == '-' then loop (p + 2) (depth + 1)
+      else if c1 == '-' && c2 == '/' then
+        if depth == 0 then p + 2
+        else loop (p + 2) (depth - 1)
+      else loop (p + 1) depth
+    else loop (p + 1) depth
+  loop (pos + 2) 0
+
+/-- Skip a line comment starting at `--`. Returns position after the newline (or end of string). -/
+def skipLineComment (source : String) (pos : Nat) : Nat :=
+  let endPos := source.rawEndPos.byteIdx
+  let rec loop (p : Nat) : Nat :=
+    if p >= endPos then p
+    else if String.Pos.Raw.get source ⟨p⟩ == '\n' then p + 1
+    else loop (p + 1)
+  loop (pos + 2)
+
 /-- Find matching bracket, handling nesting. Returns position after closing bracket.
-    Starts at position after the opening bracket. -/
+    Starts at position after the opening bracket.
+    Skips string literals, block comments, and line comments. -/
 partial def findMatchingBracket (source : String) (pos : Nat) : Option Nat :=
   let endPos := source.rawEndPos.byteIdx
   let rec loop (p : Nat) (depth : Nat) : Option Nat :=
     if p >= endPos then none
     else
       let c := String.Pos.Raw.get source ⟨p⟩
-      if c == '[' then loop (p + 1) (depth + 1)
+      -- Skip string literals
+      if c == '"' then loop (skipStringLiteral source p) depth
+      -- Skip block comments (/- ... -/)
+      else if c == '/' && p + 1 < endPos && String.Pos.Raw.get source ⟨p + 1⟩ == '-' then
+        loop (skipBlockComment source p) depth
+      -- Skip line comments (-- ...)
+      else if c == '-' && p + 1 < endPos && String.Pos.Raw.get source ⟨p + 1⟩ == '-' then
+        loop (skipLineComment source p) depth
+      else if c == '[' then loop (p + 1) (depth + 1)
       else if c == ']' then
         if depth == 0 then some (p + 1)
         else loop (p + 1) (depth - 1)
@@ -477,6 +525,89 @@ def findUnderscoreFieldReplacements (source : String) : Array Replacement := Id.
     pos := pos + line.utf8ByteSize + 1  -- +1 for newline
   return result
 
+/-- Find attribute arguments that can be stripped.
+    Within @[...] blocks, for each attribute that has arguments after the attribute name
+    (parenthesized args, string literals, etc.), generates a replacement to strip them.
+    E.g., @[to_additive (attr := continuity)] → @[to_additive]
+    E.g., @[simps (config := { fullyApplied := false })] → @[simps]
+    E.g., @[deprecated "use foo instead"] → @[deprecated] -/
+def findAttributeArgReplacements (source : String) : Array Replacement := Id.run do
+  let mut result := #[]
+  let endPos := source.rawEndPos.byteIdx
+  let mut i := 0
+  while i < endPos do
+    if matchesAt source i "@[" then
+      if let some closeBracket := findMatchingBracket source (i + 2) then
+        let attrEnd := closeBracket - 1  -- position of ']'
+        let mut j := i + 2
+        j := skipWhitespace source j
+        while j < attrEnd do
+          -- Scan attribute name (identifier, possibly dotted)
+          if let some (identEnd, _) := scanIdent source j then
+            let mut nameEnd := identEnd
+            -- Handle dotted names
+            while nameEnd < attrEnd &&
+                  String.Pos.Raw.get source ⟨nameEnd⟩ == '.' do
+              if let some (nextEnd, _) := scanIdent source (nameEnd + 1) then
+                nameEnd := nextEnd
+              else
+                break
+            -- Scan forward to find end of this attribute item
+            -- Track depth of nested parens/brackets/braces, stop at comma at depth 0
+            -- Skips string literals, block comments, and line comments
+            let mut k := nameEnd
+            let mut depth : Nat := 0
+            while k < attrEnd do
+              let c := String.Pos.Raw.get source ⟨k⟩
+              if c == '"' then
+                k := skipStringLiteral source k
+              else if c == '/' && k + 1 < attrEnd &&
+                      String.Pos.Raw.get source ⟨k + 1⟩ == '-' then
+                k := skipBlockComment source k
+              else if c == '-' && k + 1 < attrEnd &&
+                      String.Pos.Raw.get source ⟨k + 1⟩ == '-' then
+                k := skipLineComment source k
+              else if c == '(' || c == '{' || c == '[' then
+                depth := depth + 1
+                k := k + 1
+              else if c == ')' || c == '}' || c == ']' then
+                if depth > 0 then depth := depth - 1
+                k := k + 1
+              else if c == ',' && depth == 0 then
+                break
+              else
+                k := k + 1
+            -- k is at comma or attrEnd
+            -- Trim trailing whitespace from item
+            let mut itemEnd := k
+            while itemEnd > nameEnd do
+              let prevChar := String.Pos.Raw.get source ⟨itemEnd - 1⟩
+              if prevChar == ' ' || prevChar == '\t' || prevChar == '\n' then
+                itemEnd := itemEnd - 1
+              else
+                break
+            -- Check if there are arguments after the name
+            let afterName := skipWhitespace source nameEnd
+            if afterName < itemEnd then
+              -- There are arguments to strip
+              result := result.push {
+                startPos := ⟨nameEnd⟩
+                endPos := ⟨itemEnd⟩
+                replacement := ""
+              }
+            -- Move past comma and whitespace to next item
+            j := k
+            if j < attrEnd && String.Pos.Raw.get source ⟨j⟩ == ',' then
+              j := skipWhitespace source (j + 1)
+          else
+            j := j + 1
+        i := closeBracket
+      else
+        i := i + 2
+    else
+      i := i + 1
+  return result
+
 /-- Find instance priority specifications: (priority := ...) -/
 def findInstancePriorityReplacements (source : String) : Array Replacement := Id.run do
   let mut result := #[]
@@ -516,6 +647,7 @@ def miniPasses : Array MiniPass := #[
   { name := "Unicode symbols", findReplacements := findUnicodeReplacements },
   { name := "Attribute priorities", findReplacements := findAttributePriorityReplacements },
   { name := "Instance priorities", findReplacements := findInstancePriorityReplacements },
+  { name := "Attribute arg simplification", findReplacements := findAttributeArgReplacements },
   { name := "Attribute removal", findReplacements := findAttributeReplacements },
   { name := "Modifier removal", findReplacements := findModifierReplacements },
   { name := "Underscore field removal", findReplacements := findUnderscoreFieldReplacements }
