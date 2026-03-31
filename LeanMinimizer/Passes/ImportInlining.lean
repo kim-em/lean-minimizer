@@ -330,6 +330,189 @@ def findFirstNontrivialCommand (commandsPart : String) : Option String := Id.run
         return some trimmed
   return none
 
+/-! ## Inlined Block Error Recovery
+
+When inlining an import's content produces compilation errors within the inlined block,
+these functions attempt to recover by removing problematic declarations or fields. -/
+
+/-- Parse error line numbers from lean compiler output.
+    Error format: tempfile:line:col: error: ... -/
+def parseInlineErrorLines (output : String) : Array Nat := Id.run do
+  let mut resultSet : Std.HashSet Nat := {}
+  for line in output.splitOn "\n" do
+    if line.containsSubstr ": error:" then
+      let parts := line.splitOn ":"
+      if parts.length >= 2 then
+        if let some lineNum := parts[1]?.bind (·.trimAscii.toString.toNat?) then
+          resultSet := resultSet.insert lineNum
+  return resultSet.toArray
+
+/-- Find the line range of the inlined block (section Name ... end Name).
+    Returns (startLine, endLine) as 1-indexed line numbers, inclusive. -/
+def findInlinedBlockRange (source : String) (moduleName : Name) :
+    Option (Nat × Nat) := Id.run do
+  let sectionMarker := s!"section {moduleName}"
+  let endMarker := s!"end {moduleName}"
+  let lines := source.splitOn "\n"
+  let mut startLine : Option Nat := none
+  let mut endLine : Option Nat := none
+  for i in [:lines.length] do
+    let trimmed := lines[i]!.trimAscii.toString
+    if startLine.isNone && trimmed == sectionMarker then
+      startLine := some (i + 1)
+    -- Keep updating endLine to find the *last* matching `end` marker,
+    -- in case the module body itself closes an identically-named scope.
+    else if startLine.isSome && trimmed == endMarker then
+      endLine := some (i + 1)
+  match startLine, endLine with
+  | some s, some e => some (s, e)
+  | _, _ => none
+
+/-- Check if a line looks like a structure/instance field assignment or definition.
+    Pattern: indented line starting with an identifier, followed by `:=` or `:`.
+    Examples: `  one_mul := Submodule.one_mul`, `  __ := instNonUnitalSemiring`,
+              `  bot_le _ := bot_le`, `  bar : Baz` -/
+def isFieldLikeLine (line : String) : Bool := Id.run do
+  if line.isEmpty then return false
+  -- Must be indented (starts with whitespace)
+  if line == line.trimAsciiStart.toString then return false
+  let trimmed := line.trimAsciiStart.toString
+  if trimmed.isEmpty then return false
+  -- First token should be identifier-like
+  let firstToken := (trimmed.takeWhile (fun c => c.isAlphanum || c == '_')).toString
+  if firstToken.isEmpty then return false
+  -- Exclude proof/program keywords that also match the identifier + `:=`/`:` pattern
+  if firstToken ∈ ["have", "let", "show", "suffices", "calc", "match", "if", "do",
+                    "where", "return", "fun", "intro", "apply", "exact", "simp",
+                    "rw", "constructor", "cases", "induction", "obtain"] then
+    return false
+  -- Must have := or : after the identifier (possibly with patterns in between)
+  let rest := (trimmed.drop firstToken.length).toString
+  return rest.containsSubstr ":=" ||
+    rest.trimAsciiStart.toString.startsWith ":"
+
+/-- Check if a line is "top-level" within the inlined block body:
+    non-empty, not indented, and not a comment. -/
+def isBlockTopLevel (line : String) : Bool := Id.run do
+  if line.isEmpty then return false
+  if line != line.trimAsciiStart.toString then return false
+  let trimmed := line.trimAsciiStart.toString
+  if trimmed.startsWith "--" || trimmed.startsWith "/-" then return false
+  -- Exclude continuation keywords that can appear flush-left but belong to previous decl
+  for kw in ["| ", "where", "termination_by", "decreasing_by", "deriving ", "with"] do
+    if trimmed.startsWith kw || trimmed == kw.trimAscii.toString then return false
+  return true
+
+/-- Find the line range of the declaration enclosing the given error line.
+    Declarations are delimited by non-indented, non-comment lines ("top-level" lines).
+    Returns (startLine, endLine) as 1-indexed line numbers, inclusive. -/
+def findEnclosingDeclaration (lines : Array String) (errorLine : Nat)
+    (blockStart blockEnd : Nat) : Nat × Nat := Id.run do
+  -- Block body (excluding section/end markers) is blockStart+1 to blockEnd-1
+  let bodyStart := blockStart + 1
+  let bodyEnd := blockEnd - 1
+
+  -- Scan backward from error line to find declaration start
+  let mut declStart := bodyStart
+  for j in [:errorLine - bodyStart + 1] do
+    let lineNum := errorLine - j
+    if lineNum < bodyStart then break
+    if lineNum > 0 && lineNum <= lines.size then
+      if isBlockTopLevel lines[lineNum - 1]! then
+        declStart := lineNum
+        break
+
+  -- Scan forward from error line + 1 to find next top-level line
+  let mut declEnd := bodyEnd
+  for lineNum in [errorLine + 1 : bodyEnd + 1] do
+    if lineNum > 0 && lineNum <= lines.size then
+      if isBlockTopLevel lines[lineNum - 1]! then
+        declEnd := lineNum - 1
+        break
+
+  return (declStart, declEnd)
+
+/-- Try to fix an inlined block by removing declarations/fields with errors.
+    Called when inlining produces compilation errors.
+
+    Algorithm:
+    1. Parse error locations from compiler output
+    2. For errors in the inlined block: delete field-like lines individually,
+       or delete entire declarations for other errors
+    3. Test if the result compiles -/
+def tryFixInlinedBlock (source : String) (errorOutput : String) (fileName : String)
+    (moduleName : Name) (verbose : Bool) : IO (Option String) := do
+  let mut currentSource := source
+  let mut currentErrors := errorOutput
+  -- Iterate: fix errors, recompile, fix new errors, until stable or we give up.
+  -- Cap iterations to avoid unbounded loops.
+  for _ in [:20] do
+    -- Parse error line numbers
+    let errorLines := parseInlineErrorLines currentErrors
+    if errorLines.isEmpty then return none
+
+    -- Find the inlined block range (recomputed each iteration since source changes)
+    let some (blockStart, blockEnd) := findInlinedBlockRange currentSource moduleName
+      | return none
+
+    -- Filter to errors within the inlined block (between section and end markers)
+    let blockErrors := errorLines.filter fun n => n > blockStart && n < blockEnd
+    if blockErrors.isEmpty then
+      if verbose then
+        IO.eprintln s!"    No errors in inlined block (all {errorLines.size} errors are outside)"
+      return none
+
+    if verbose then
+      IO.eprintln s!"    Found {blockErrors.size} errors in inlined block, attempting recovery..."
+
+    -- Process each error - determine what to delete
+    let lines := currentSource.splitOn "\n" |>.toArray
+    let mut linesToDelete : Std.HashSet Nat := {}
+
+    for errLine in blockErrors do
+      -- Skip if this line is already marked for deletion
+      if linesToDelete.contains errLine then continue
+      if errLine == 0 || errLine > lines.size then continue
+      let line := lines[errLine - 1]!
+      if isFieldLikeLine line then
+        -- Field-like line: delete just this line
+        if verbose then
+          IO.eprintln s!"      Line {errLine}: deleting field '{line.trimAscii.toString}'"
+        linesToDelete := linesToDelete.insert errLine
+      else
+        -- Non-field: delete the enclosing declaration
+        let (declStart, declEnd) := findEnclosingDeclaration lines errLine blockStart blockEnd
+        if verbose then
+          IO.eprintln s!"      Line {errLine}: deleting declaration (lines {declStart}-{declEnd})"
+        for lineNum in [declStart : declEnd + 1] do
+          linesToDelete := linesToDelete.insert lineNum
+
+    if linesToDelete.isEmpty then return none
+
+    -- Apply deletions
+    let mut resultLines := #[]
+    for i in [:lines.size] do
+      if !linesToDelete.contains (i + 1) then
+        resultLines := resultLines.push lines[i]!
+    let fixedSource := "\n".intercalate resultLines.toList
+
+    if verbose then
+      IO.eprintln s!"    Deleted {linesToDelete.size} lines, testing compilation..."
+
+    -- Test if it compiles now
+    let (compiled, newErrors) ← testCompilesSubprocessWithError fixedSource fileName
+    if compiled then
+      if verbose then
+        IO.eprintln s!"    Recovery successful!"
+      return some fixedSource
+    -- Not yet — loop with the new errors
+    currentSource := fixedSource
+    currentErrors := newErrors
+
+  if verbose then
+    IO.eprintln s!"    Recovery failed (errors remain after max iterations)"
+  return none
+
 /-- The import inlining pass.
 
     Iteratively tries to inline imports one at a time, returning `.restart` after each
@@ -402,13 +585,20 @@ unsafe def importInliningPass : Pass where
                                               imp.moduleName cleanModuleBody openScopes
                                               commandsPart stripModifiers
 
-          -- Test compilation
-          if ← testSourceCompilesInline newSource ctx.fileName then
+          -- Test compilation (capture error output for recovery)
+          let (compiled, errorOutput) ← testCompilesSubprocessWithError newSource ctx.fileName
+          if compiled then
             if ctx.verbose then
               IO.eprintln s!"    Successfully inlined {imp.moduleName}"
             return { source := newSource, changed := true, action := .restart }
           else
-            -- Compilation failed - record it and try the next import
+            -- Compilation failed - try to fix by removing problematic declarations/fields
+            if let some fixedSource ← tryFixInlinedBlock newSource errorOutput ctx.fileName
+                                        imp.moduleName ctx.verbose then
+              if ctx.verbose then
+                IO.eprintln s!"    Successfully inlined {imp.moduleName} (with error recovery)"
+              return { source := fixedSource, changed := true, action := .restart }
+            -- Recovery also failed - record and try the next import
             -- (import order might matter in some cases)
             if ctx.verbose then
               IO.eprintln s!"    Compilation failed after inlining, trying next import"
