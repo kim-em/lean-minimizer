@@ -341,7 +341,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       -- Validate cross-toolchain setup if specified
       if let some tc := parsedArgs.crossToolchain then
         if parsedArgs.verbose then
-          IO.eprintln s!"Cross-version minimization: primary toolchain must succeed, {tc} must fail"
+          IO.eprintln s!"Cross-version minimization: file must compile under both primary and {tc}"
         -- Verify the cross toolchain can actually be resolved by elan
         let elanCheck ← IO.Process.output {
           cmd := "elan"
@@ -356,11 +356,11 @@ unsafe def main (args : List String) : IO UInt32 := do
         -- Verify initial file compiles under primary
         if !(← testCompilesSubprocess input inputFile) then
           throw <| IO.userError "Initial file does not compile under the primary toolchain"
-        -- Verify initial file fails under cross toolchain
-        if !(← testFailsWithToolchain input inputFile tc) then
-          throw <| IO.userError s!"Initial file unexpectedly compiles under cross toolchain {tc}.\n\
-            Cross-version minimization requires the file to compile under the primary\n\
-            toolchain but FAIL under the cross toolchain."
+        -- Verify initial file compiles under cross toolchain
+        if !(← testSucceedsWithToolchain input inputFile tc) then
+          throw <| IO.userError s!"Initial file does not compile under cross toolchain {tc}.\n\
+            Cross-version minimization requires the file to compile under BOTH toolchains.\n\
+            Use #elab_if to conditionally elaborate version-specific code."
 
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)

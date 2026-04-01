@@ -33,7 +33,42 @@ lake exe minimize <file.lean> [options]
   - `--only-attr-expansion`: Attribute expansion
   - `--only-import-minimization`: Import minimization
   - `--only-import-inlining`: Import inlining
+- `--cross-toolchain <TOOLCHAIN>`: Cross-version minimization. The file must compile under both the primary toolchain and this toolchain. Use with `#elab_if` (see below).
 - `--help`: Show help message
+
+### Cross-version minimization with `#elab_if`
+
+When a file behaves differently under two Lean versions, you can minimize while preserving the difference. First, define `#elab_if` by adding this to the top of your file (after `import Lean`):
+
+```lean
+open Lean Elab Command Term Meta in
+elab "#elab_if " cond:term " in " cmd:command : command => do
+  if (← liftTermElabM do unsafe
+    evalExpr Bool (mkConst ``Bool) (← elabTerm cond (some (mkConst ``Bool)))
+  ) then elabCommand cmd
+```
+
+Then use it to guard version-specific behavior:
+
+```lean
+-- This theorem works on v4.28.0-rc1
+#elab_if Lean.versionString == "4.28.0-rc1" in
+theorem foo : True := by trivial
+
+-- On v4.27.0, the tactic fails with a specific error
+#elab_if Lean.versionString == "4.27.0" in
+/-- error: tactic 'trivial' failed -/
+#guard_msgs in
+theorem foo : True := by trivial
+```
+
+Then minimize with:
+
+```bash
+lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+```
+
+The minimizer ensures the file compiles under **both** toolchains after each minimization step. The `#elab_if` blocks encode exactly what behavior is expected on each version — the minimizer doesn't need to know.
 
 ### Example
 

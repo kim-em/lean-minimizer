@@ -99,16 +99,18 @@ Options:
 
   --cross-toolchain <TOOLCHAIN>
     Cross-version minimization. Specifies a second Lean toolchain (e.g.
-    leanprover/lean4:v4.27.0) where the file must FAIL to compile after
-    each minimization step. The primary toolchain (from lean-toolchain)
-    must succeed, and the cross toolchain must fail.
+    leanprover/lean4:v4.27.0). The file must compile successfully under
+    BOTH the primary toolchain and the cross toolchain after each
+    minimization step.
 
-    Use #guard_msgs to specify the desired behavior on the primary
-    toolchain. If the cross toolchain produces different output,
-    #guard_msgs will fail there automatically, which is exactly what
-    we want.
+    Use #elab_if to conditionally elaborate code based on the Lean
+    version, and #guard_msgs to capture version-specific error messages.
+    This way the file encodes exactly what behavior is expected on each
+    toolchain, and the minimizer just ensures both succeed.
 
-    Uses ELAN_TOOLCHAIN to select the cross toolchain.
+    See the #elab_if section below for the definition and usage.
+
+    Uses `elan run --install` to invoke the cross toolchain.
 
   --only-<PASS>
     Run only the specified pass once. Available passes:
@@ -145,14 +147,33 @@ This captures the exact error message, making it ideal for bug reports
 and regression tests.
 
 Cross-version minimization:
-  If a file behaves differently under two Lean versions, use
-  #guard_msgs to capture the behavior on the primary toolchain, then
-  pass --cross-toolchain to preserve the difference:
+  If a file behaves differently under two Lean versions, use #elab_if
+  to conditionally elaborate version-specific code. Define #elab_if
+  by adding this to the top of your file (after `import Lean`):
 
-  lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+    open Lean Elab Command Term Meta in
+    elab \"#elab_if \" cond:term \" in \" cmd:command : command => do
+      if (← liftTermElabM do unsafe
+        evalExpr Bool (mkConst ``Bool) (← elabTerm cond (some (mkConst ``Bool)))
+      ) then elabCommand cmd
 
-  The minimizer will keep only commands needed for the file to compile
-  under the primary toolchain AND fail under the cross toolchain.
+  Then use it to guard version-specific behavior:
+
+    -- This theorem works on v4.28.0-rc1
+    #elab_if Lean.versionString == \"4.28.0-rc1\" in
+    theorem foo : ... := by some_tactic
+
+    -- On v4.27.0, the tactic fails with a specific error
+    #elab_if Lean.versionString == \"4.27.0\" in
+    /-- error: tactic 'some_tactic' failed -/
+    #guard_msgs in
+    theorem foo : ... := by some_tactic
+
+  Then minimize with:
+
+    lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+
+  The minimizer ensures the file compiles under BOTH toolchains.
 "
 
 /-- Parsed command line arguments -/
@@ -185,8 +206,8 @@ structure Args where
   resume : Bool := false
   /-- Budget for complete sweeps as fraction of runtime (0.0-1.0, default 0.20) -/
   completeSweepBudget : Float := 0.20
-  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile.
-      This preserves the behavior difference between the primary and cross toolchains. -/
+  /-- Cross-version minimization: a second toolchain where the file must also compile.
+      Use with #elab_if to encode version-specific expectations in the file itself. -/
   crossToolchain : Option String := none
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
@@ -298,7 +319,7 @@ structure MinState where
   testCount : IO.Ref Nat
   /-- Output file to write intermediate results to (optional) -/
   outputFile : Option String := none
-  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile -/
+  /-- Cross-version minimization: a second toolchain where the file must also compile -/
   crossToolchain : Option String := none
 
 /-- A heuristic for splitting candidates during delta debugging.
@@ -480,11 +501,10 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
   result
 
-/-- Test if source FAILS to compile under a specific toolchain.
-    Used for cross-version minimization to verify the behavior difference is preserved.
-    Returns true if the file fails to compile (which is the desired outcome).
+/-- Test if source compiles successfully under a specific toolchain.
+    Used for cross-version minimization to verify the file works on both toolchains.
     Uses `elan run --install` to ensure the correct toolchain is used without fallback. -/
-def testFailsWithToolchain (source : String) (fileName : String) (toolchain : String) : IO Bool := do
+def testSucceedsWithToolchain (source : String) (fileName : String) (toolchain : String) : IO Bool := do
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
   let tempDir ← getTempDir
@@ -506,14 +526,13 @@ def testFailsWithToolchain (source : String) (fileName : String) (toolchain : St
       args := #["run", "--install", toolchain, "lean"] ++ leanOptions ++ #[tempFile.toString]
       env := env
     }
-    -- We want failure: exitCode != 0 means the behavior difference is preserved
-    return result.exitCode != 0
+    return result.exitCode == 0
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Test if source compiles by running lean in a subprocess.
     This isolates memory usage - when the subprocess exits, all Lean caches are freed.
-    When `crossToolchain` is set, also verifies the file FAILS under that toolchain. -/
+    When `crossToolchain` is set, also verifies the file compiles under that toolchain. -/
 def testCompilesSubprocess (source : String) (fileName : String)
     (crossToolchain : Option String := none) : IO Bool := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
@@ -549,12 +568,12 @@ def testCompilesSubprocess (source : String) (fileName : String)
     -- Primary check passed. Now do cross-toolchain check if configured.
     match crossToolchain with
     | none => return true
-    | some tc => testFailsWithToolchain source fileName tc
+    | some tc => testSucceedsWithToolchain source fileName tc
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Check if source compiles using subprocess, returning error output if it fails.
-    When `crossToolchain` is set, also verifies the file FAILS under that toolchain. -/
+    When `crossToolchain` is set, also verifies the file compiles under that toolchain. -/
 def testCompilesSubprocessWithError (source : String) (fileName : String)
     (crossToolchain : Option String := none) : IO (Bool × String) := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
@@ -594,11 +613,11 @@ def testCompilesSubprocessWithError (source : String) (fileName : String)
     match crossToolchain with
     | none => return (true, "")
     | some tc =>
-      let crossFails ← testFailsWithToolchain source fileName tc
-      if crossFails then
+      let crossSucceeds ← testSucceedsWithToolchain source fileName tc
+      if crossSucceeds then
         return (true, "")
       else
-        return (false, "Cross-toolchain check failed: file unexpectedly compiled under " ++ tc)
+        return (false, "Cross-toolchain check failed: file failed to compile under " ++ tc)
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
