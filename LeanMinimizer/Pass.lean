@@ -85,7 +85,7 @@ structure PassContext where
   /-- Whether this is a complete sweep (process all including stable sections)
       or an unstable-only sweep (skip stable sections to save time). -/
   isCompleteSweep : Bool := true
-  /-- Cross-version minimization: a second toolchain where the file must FAIL to compile -/
+  /-- Cross-version minimization: a second toolchain where the file must also compile -/
   crossToolchain : Option String := none
 
 /-- Result of running a pass -/
