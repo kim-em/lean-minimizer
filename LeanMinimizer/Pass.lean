@@ -284,6 +284,18 @@ def SubprocessPassResult.toPassResult (result : SubprocessPassResult) : PassResu
   { source := result.source, changed := result.changed, action,
     newFailedChanges := result.newFailedChanges, clearMemory := result.clearMemory }
 
+/-- Commit the current state of the output file to git with a message describing the pass. -/
+def gitCommitPass (outputFile : String) (passName : String) : IO Unit := do
+  -- Find the directory containing the output file
+  let dir := (System.FilePath.mk outputFile).parent.getD "."
+  let run (args : Array String) : IO Bool := do
+    let r ← IO.Process.output { cmd := "git", args, cwd := dir }
+    return r.exitCode == 0
+  -- Stage the output file and commit
+  if ← run #["add", outputFile] then
+    discard <| run #["commit", "-m", s!"minimize: {passName}",
+      "--author", "minimize <minimize@localhost>"]
+
 /-- Run passes in sequence according to their on-success actions.
     Uses subprocess-based elaboration to avoid [init] conflicts.
 
@@ -305,7 +317,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     (completeSweepBudget : Float := 0.20)
     (initialStableSections : Std.HashSet String := {})
     (initialTopmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none) : IO String := do
+    (crossToolchain : Option String := none)
+    (gitCommit : Bool := false) : IO String := do
   if passes.isEmpty then
     return input
 
@@ -457,6 +470,8 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     -- Write updated source to output file if specified
     if let some outPath := outputFile then
       IO.FS.writeFile outPath source
+      if gitCommit then
+        gitCommitPass outPath pass.name
 
     match result.action with
     | .restart =>

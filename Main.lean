@@ -365,7 +365,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)
                      parsedArgs.completeSweepBudget initialStableSections initialTopmostEndIdx
-                     parsedArgs.crossToolchain
+                     parsedArgs.crossToolchain parsedArgs.gitCommit
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>
