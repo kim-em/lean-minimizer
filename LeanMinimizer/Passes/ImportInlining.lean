@@ -50,46 +50,23 @@ def buildModulePath (root : FilePath) (components : List String) : FilePath :=
   (components.foldl (· / ·) root).withExtension "lean"
 
 /-- Resolve a module name to a file path.
-    Searches both project-local modules and dependencies in .lake/packages/. -/
+    Searches the project root and `LEAN_SRC_PATH` (which Lake sets to include all dependency
+    source directories, including path dependencies and packages in `.lake/packages/`). -/
 def resolveModulePath (modName : Name) (currentFile : String) : IO (Option FilePath) := do
-  -- Convert name to path components
-  let components := nameToPathComponents modName
-  if components.isEmpty then
-    return none
-
-  -- Convert to absolute path if relative
+  -- Build search path from LEAN_SRC_PATH (set by Lake to include all dep source dirs)
+  let srcPath ← match (← IO.getEnv "LEAN_SRC_PATH") with
+    | some val => pure (SearchPath.parse val)
+    | none => pure []
+  -- Also include the project root (computed from currentFile)
   let currentFilePath := FilePath.mk currentFile
   let absolutePath ←
-    if currentFilePath.isAbsolute then
-      pure currentFilePath
-    else
-      -- Make it absolute relative to current working directory
-      let cwd ← IO.currentDir
-      pure (cwd / currentFilePath)
-
-  -- Find project root
-  let some parent := absolutePath.parent
-    | return none
-  let some root ← findProjectRoot parent
-    | return none
-
-  -- Try 1: Check in project root
-  let projectPath := buildModulePath root components
-  if ← projectPath.pathExists then
-    return some projectPath
-
-  -- Try 2: Check in .lake/packages/
-  let packagesDir := root / ".lake" / "packages"
-  if ← packagesDir.pathExists then
-    -- List all package directories
-    let entries ← packagesDir.readDir
-    for entry in entries do
-      if ← entry.path.isDir then
-        let pkgPath := buildModulePath entry.path components
-        if ← pkgPath.pathExists then
-          return some pkgPath
-
-  return none
+    if currentFilePath.isAbsolute then pure currentFilePath
+    else do let cwd ← IO.currentDir; pure (cwd / currentFilePath)
+  let mut searchPath := srcPath
+  if let some parent := absolutePath.parent then
+    if let some root ← findProjectRoot parent then
+      searchPath := [root] ++ searchPath
+  SearchPath.findModuleWithExt searchPath "lean" modName
 
 /-- Merge imports: remove the inlined import, add the module's imports, deduplicate. -/
 def mergeImports (original : Array ImportInfo) (toRemove : ImportInfo)
