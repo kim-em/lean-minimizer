@@ -125,6 +125,11 @@ Options:
       --only-import-minimization  Import minimization
       --only-import-inlining   Import inlining
 
+  --git
+    Commit to git after each minimization step that makes a change.
+    The workspace must already be a git repo. Each commit uses a message
+    describing which pass made the change.
+
   --help
     Show this help message.
 
@@ -209,6 +214,8 @@ structure Args where
   /-- Cross-version minimization: a second toolchain where the file must also compile.
       Use with #elab_if to encode version-specific expectations in the file itself. -/
   crossToolchain : Option String := none
+  /-- Commit to git after each pass that makes a change -/
+  gitCommit : Bool := false
 
 /-- Check if verbose output is enabled (default is verbose, --quiet disables) -/
 def Args.verbose (args : Args) : Bool := !args.quiet
@@ -249,6 +256,7 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-extends" :: rest => go rest { acc with onlyPass := some "extends" }
     | "--only-attr-expansion" :: rest => go rest { acc with onlyPass := some "attr-expansion" }
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
+    | "--git" :: rest => go rest { acc with gitCommit := true }
     | "--resume" :: rest => go rest { acc with resume := true }
     | "--cross-toolchain" :: tc :: rest => go rest { acc with crossToolchain := some tc }
     | "--cross-toolchain" :: [] => .error "--cross-toolchain requires an argument"
