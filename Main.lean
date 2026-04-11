@@ -293,14 +293,14 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.println help
       return 0
 
-    try
-      let passes := buildPassList parsedArgs
-      -- Default output file: replace .lean with .out.lean
-      let outputFile := parsedArgs.outputFile.getD
+    let passes := buildPassList parsedArgs
+    -- Default output file: replace .lean with .out.lean
+    let outputFile := parsedArgs.outputFile.getD
         (if parsedArgs.file.endsWith ".lean" then
           (parsedArgs.file.dropEnd 5).toString ++ ".out.lean"
         else
           parsedArgs.file ++ ".out.lean")
+    try
       -- If --resume is set and output file exists, use it as input
       let inputFile ← if parsedArgs.resume then do
         if ← System.FilePath.pathExists outputFile then
@@ -366,8 +366,14 @@ unsafe def main (args : List String) : IO UInt32 := do
                      parsedArgs.verbose (some outputFile)
                      parsedArgs.completeSweepBudget initialStableSections initialTopmostEndIdx
                      parsedArgs.crossToolchain parsedArgs.gitCommit
+      -- Commit final state so uncommitted changes after exit = human edits
+      if parsedArgs.gitCommit then
+        gitCommitPass outputFile "final state"
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>
+      -- Commit whatever state we have before exiting on error
+      if parsedArgs.gitCommit then
+        gitCommitPass outputFile "final state (error)"
       IO.eprintln s!"Error: {e}"
       return 1
