@@ -327,7 +327,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
   -- Safety limit to prevent infinite loops. In practice, minimization converges in
   -- far fewer iterations (typically < 100). If this limit is hit, it likely indicates
   -- a bug in pass logic (e.g., a pass that always reports changes but doesn't modify source).
-  let maxIterations := 1000
+  let maxIterations := 10_000
   let mut iterations := 0
   let mut pendingRestart := false  -- Track if we need to restart after a repeatThenRestart cycle
   let mut failedChanges : Std.HashSet String := {}  -- Memory of failed changes

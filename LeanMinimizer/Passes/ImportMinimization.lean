@@ -270,7 +270,7 @@ unsafe def importMinimizationPass : Pass where
     let mut anyChanges := false
 
     -- Loop until no more changes can be made
-    let maxIterations := 1000
+    let maxIterations := 10_000
     for _ in [:maxIterations] do
       let mut madeProgress := false
 
