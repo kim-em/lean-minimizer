@@ -519,25 +519,30 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
   result
 
-/-- Test if `source` compiles under a second, independent Lake workspace.
-    Used for cross-version minimization: verifies the file works under both the
-    primary toolchain (driven by `testCompilesSubprocess`) and the toolchain
-    pinned by `crossWorkspace/lean-toolchain`.
+/-- Internal: run `lean` on `source` inside `crossWorkspace` under a hermetic
+    allowlist environment. Returns `(success, combinedOutput)` where
+    `combinedOutput` is the child's stdout+stderr (useful on failure).
 
-    The caller must have already built `crossWorkspace` (that is, its
-    dependencies must be available under `<crossWorkspace>/.lake/build/`). This
-    function does not run `lake build`; orchestrating that is the responsibility
-    of the test harness or the Python `minimize` CLI.
+    Two subtleties make this tricky:
 
-    Spawns `lake env lean <file>` with `cwd := crossWorkspace` and with every
-    Lake/Lean/elan environment variable scrubbed to `none`. The scrubbing is
-    essential: without it, vars like `LD_LIBRARY_PATH` and `ELAN_TOOLCHAIN` leak
-    from the primary workspace and let the primary's `libleanshared.so` hijack
-    the cross toolchain's `lean` shim — which was exactly the bug that motivated
-    this redesign. Leaving the list empty lets the cross workspace's `lake`
-    compute all resolution from scratch. -/
-def testSucceedsInCrossWorkspace (source : String) (fileName : String)
-    (crossWorkspace : String) : IO Bool := do
+    * `lake env` injects the PRIMARY toolchain's `bin/` ahead of
+      `$ELAN_HOME/bin` on `PATH`. A bare `lake` inside a child process would
+      therefore resolve to the primary toolchain's `lake` and bypass elan
+      entirely — silently running the cross workspace under the primary
+      toolchain. We invoke the elan shim by absolute path so cwd's
+      `lean-toolchain` file wins.
+
+    * The parent process also leaks loader and toolchain env vars
+      (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`,
+      `NIX_LD`, `NIX_LD_LIBRARY_PATH`, `LEAN_*`, `LAKE_*`, `ELAN_TOOLCHAIN`, …)
+      — that is exactly the class of variable that caused the original bug.
+      Trying to enumerate every dangerous var is a rearguard action; new
+      ones keep showing up. We instead build the child's environment from
+      an explicit **allowlist** by execing `env -i` with only the variables
+      we know the subprocess needs, and let everything else drop on the
+      floor. -/
+private def runCrossLean (source : String) (fileName : String)
+    (crossWorkspace : String) : IO (Bool × String) := do
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
   let tempDir ← getTempDir
@@ -548,11 +553,9 @@ def testSucceedsInCrossWorkspace (source : String) (fileName : String)
   -- options like `autoImplicit` can differ between toolchains.
   let leanOptions ← getLeanOptionsFromToml crossWorkspace
 
-  -- Locate the elan `lake` shim. The parent process's PATH (under `lake env`)
-  -- puts the PRIMARY toolchain's `bin/` before `$ELAN_HOME/bin`, so a bare
-  -- `lake` lookup would resolve to primary's lake, bypassing elan entirely —
-  -- and silently run the cross workspace under the primary toolchain.
-  -- We invoke the elan shim by absolute path so cwd's `lean-toolchain` wins.
+  -- Locate the elan `lake` shim. HOME fallback makes this portable across
+  -- Linux, macOS, and nix/home-manager setups that don't always export
+  -- ELAN_HOME into child processes.
   let elanHome ← match ← IO.getEnv "ELAN_HOME" with
     | some h => pure h
     | none =>
@@ -562,37 +565,54 @@ def testSucceedsInCrossWorkspace (source : String) (fileName : String)
         throw <| IO.userError "CROSS_WORKSPACE_SETUP_FAILED: neither ELAN_HOME nor HOME is set; cannot locate elan `lake` shim"
   let elanLakeShim := elanHome ++ "/bin/lake"
 
-  -- Scrub inherited Lake/Lean/elan env so the cross workspace's `lake env`
-  -- resolves the toolchain, sysroot, and library paths from scratch.
-  let env : Array (String × Option String) := #[
-    ("LEAN_PATH", none),
-    ("LEAN_SYSROOT", none),
-    ("LEAN_SRC_PATH", none),
-    ("LEAN_GITHASH", none),
-    ("LEAN_AR", none),
-    ("LEAN", none),
-    ("LEAN_RECURSION_COUNT", none),
-    ("LD_LIBRARY_PATH", none),
-    ("ELAN_TOOLCHAIN", none),
-    ("LAKE", none),
-    ("LAKE_HOME", none),
-    ("LAKE_CONFIG", none),
-    ("LAKE_CACHE_DIR", none),
-    ("LAKE_ARTIFACT_CACHE", none),
-    ("LAKE_NO_CACHE", none),
-    ("LAKE_PKG_URL_MAP", none)
+  -- Allowlist env: exec `env -i <KEY=VALUE> … <lake> env lean <file>`. `env -i`
+  -- starts from an empty environment, so nothing the parent exported leaks.
+  let home := (← IO.getEnv "HOME").getD "/"
+  let lang := (← IO.getEnv "LANG").getD "C.UTF-8"
+  let tmpdir := (← IO.getEnv "TMPDIR").getD "/tmp"
+  let allowlist : Array String := #[
+    s!"HOME={home}",
+    s!"ELAN_HOME={elanHome}",
+    s!"PATH={elanHome}/bin:/usr/bin:/bin",
+    s!"LANG={lang}",
+    s!"TMPDIR={tmpdir}"
   ]
 
   try
     let result ← IO.Process.output {
-      cmd := elanLakeShim
-      args := #["env", "lean"] ++ leanOptions ++ #[tempFile.toString]
+      cmd := "env"
+      args := #["-i"] ++ allowlist
+              ++ #[elanLakeShim, "env", "lean"]
+              ++ leanOptions
+              ++ #[tempFile.toString]
       cwd := crossWorkspace
-      env := env
     }
-    return result.exitCode == 0
+    let success := result.exitCode == 0
+    let out := if success then "" else (result.stdout ++ result.stderr)
+    return (success, out)
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
+
+/-- Test if `source` compiles under a second, independent Lake workspace.
+    Used for cross-version minimization: verifies the file works under both the
+    primary toolchain (driven by `testCompilesSubprocess`) and the toolchain
+    pinned by `crossWorkspace/lean-toolchain`.
+
+    The caller must have already built `crossWorkspace` (that is, its
+    dependencies must be available under `<crossWorkspace>/.lake/build/`). This
+    function does not run `lake build`; orchestrating that is the responsibility
+    of the test harness or the Python `minimize` CLI. -/
+def testSucceedsInCrossWorkspace (source : String) (fileName : String)
+    (crossWorkspace : String) : IO Bool := do
+  let (success, _) ← runCrossLean source fileName crossWorkspace
+  return success
+
+/-- As `testSucceedsInCrossWorkspace`, but on failure returns the cross
+    compile's combined stdout+stderr so callers can surface it to the user
+    in mid-minimization error messages. -/
+def testSucceedsInCrossWorkspaceWithError (source : String) (fileName : String)
+    (crossWorkspace : String) : IO (Bool × String) :=
+  runCrossLean source fileName crossWorkspace
 
 /-- Test if source compiles by running lean in a subprocess.
     This isolates memory usage - when the subprocess exits, all Lean caches are freed.
@@ -677,11 +697,11 @@ def testCompilesSubprocessWithError (source : String) (fileName : String)
     match crossWorkspace with
     | none => return (true, "")
     | some ws =>
-      let crossSucceeds ← testSucceedsInCrossWorkspace source fileName ws
+      let (crossSucceeds, crossErr) ← testSucceedsInCrossWorkspaceWithError source fileName ws
       if crossSucceeds then
         return (true, "")
       else
-        return (false, "Cross-workspace check failed: file failed to compile in " ++ ws)
+        return (false, s!"Cross-workspace check failed in {ws}:\n{crossErr}")
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 

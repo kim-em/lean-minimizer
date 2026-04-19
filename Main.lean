@@ -342,6 +342,12 @@ unsafe def main (args : List String) : IO UInt32 := do
       -- We normalise the path to absolute here so that every `cwd := ...` spawn
       -- in `testSucceedsInCrossWorkspace` resolves the same way, independent of
       -- which directory tier-2 pass subprocesses happen to run from.
+      -- Validation is split into *structural* checks (tagged
+      -- `CROSS_WORKSPACE_*`) that happen here and *compile* checks (tagged
+      -- `INITIAL_COMPILE_FAILED` / `CROSS_TOOLCHAIN_INITIAL_COMPILE_FAILED`)
+      -- that happen after: the first category means "your workspace is
+      -- broken, we can't even start"; the second means "we tried, your
+      -- source doesn't compile there."
       let crossWorkspaceAbs : Option String ← match parsedArgs.crossWorkspace with
         | none => pure none
         | some ws =>
@@ -351,20 +357,38 @@ unsafe def main (args : List String) : IO UInt32 := do
           let cwd ← IO.currentDir
           let wsAbs := if wsPath.isAbsolute then wsPath else cwd / wsPath
           let wsAbsStr := wsAbs.toString
+          -- Required workspace shape.
           let toolchainFile := wsAbs / "lean-toolchain"
           if !(← toolchainFile.pathExists) then
             throw <| IO.userError s!"CROSS_WORKSPACE_INVALID: '{wsAbsStr}' has no lean-toolchain file"
+          let hasLakefileToml ← (wsAbs / "lakefile.toml").pathExists
+          let hasLakefileLean ← (wsAbs / "lakefile.lean").pathExists
+          if !hasLakefileToml && !hasLakefileLean then
+            throw <| IO.userError s!"CROSS_WORKSPACE_INVALID: '{wsAbsStr}' has no lakefile.toml or lakefile.lean"
           let tcLabel := (← IO.FS.readFile toolchainFile).trimAscii.toString
           if parsedArgs.verbose then
             IO.eprintln s!"Cross-version minimization: file must compile under both primary and {tcLabel} (workspace: {wsAbsStr})"
+          -- Probe the cross workspace's lake shim: if `lake env lean --version`
+          -- doesn't work, the cross workspace is structurally broken (missing
+          -- `.lake/`, corrupt toolchain install, etc.) and we want to flag that
+          -- as a setup problem rather than a "your source doesn't compile"
+          -- compile failure.
+          let (probeOk, probeErr) ←
+            testSucceedsInCrossWorkspaceWithError "" "probe.lean" wsAbsStr
+          -- An empty file should always elaborate; if the probe fails we know
+          -- the workspace itself is broken.
+          if !probeOk then
+            throw <| IO.userError s!"CROSS_WORKSPACE_SETUP_FAILED: cross workspace '{wsAbsStr}' (toolchain {tcLabel}) is not functional. Did you `lake build` it?\n{probeErr}"
           -- Verify initial file compiles under primary
           if !(← testCompilesSubprocess input inputFile) then
             throw <| IO.userError "INITIAL_COMPILE_FAILED: Initial file does not compile under the primary toolchain"
           -- Verify initial file compiles under the cross workspace
-          if !(← testSucceedsInCrossWorkspace input inputFile wsAbsStr) then
+          let (crossOk, crossErr) ←
+            testSucceedsInCrossWorkspaceWithError input inputFile wsAbsStr
+          if !crossOk then
             throw <| IO.userError s!"CROSS_TOOLCHAIN_INITIAL_COMPILE_FAILED: Initial file does not compile under cross toolchain {tcLabel} (workspace: {wsAbsStr}).\n\
               Cross-version minimization requires the file to compile under BOTH toolchains.\n\
-              Use #elab_if to conditionally elaborate version-specific code."
+              Use #elab_if to conditionally elaborate version-specific code.\n{crossErr}"
           pure (some wsAbsStr)
 
       let _ ← runPasses passes input inputFile parsedArgs.marker
