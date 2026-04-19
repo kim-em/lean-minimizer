@@ -566,14 +566,26 @@ private def runCrossLean (source : String) (fileName : String)
   let elanLakeShim := elanHome ++ "/bin/lake"
 
   -- Allowlist env: exec `env -i <KEY=VALUE> … <lake> env lean <file>`. `env -i`
-  -- starts from an empty environment, so nothing the parent exported leaks.
+  -- starts from an empty environment, so nothing the parent exported leaks
+  -- unless we explicitly re-export it.
+  --
+  -- PATH deserves special treatment. The original hijack that motivated this
+  -- whole subsystem came through `LD_LIBRARY_PATH`, not `PATH`. A maximally
+  -- hermetic PATH (`$ELAN_HOME/bin:/usr/bin:/bin`) looks tidy but excludes
+  -- `git` on platforms where git lives elsewhere (e.g. NixOS's
+  -- `/run/current-system/sw/bin`), and Lake does reach for `git` during
+  -- dep resolution. So we keep the parent's PATH and just prepend
+  -- `$ELAN_HOME/bin` so the elan shim beats any primary-toolchain `lake`
+  -- that `lake env` may have shoved onto the parent PATH. Loader variables
+  -- remain scrubbed, which is the invariant that actually matters.
   let home := (← IO.getEnv "HOME").getD "/"
   let lang := (← IO.getEnv "LANG").getD "C.UTF-8"
   let tmpdir := (← IO.getEnv "TMPDIR").getD "/tmp"
+  let parentPath := (← IO.getEnv "PATH").getD "/usr/bin:/bin"
   let allowlist : Array String := #[
     s!"HOME={home}",
     s!"ELAN_HOME={elanHome}",
-    s!"PATH={elanHome}/bin:/usr/bin:/bin",
+    s!"PATH={elanHome}/bin:{parentPath}",
     s!"LANG={lang}",
     s!"TMPDIR={tmpdir}"
   ]
