@@ -469,7 +469,7 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
     (topmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none) : IO SubprocessPassResult := do
+    (crossWorkspace : Option String := none) : IO SubprocessPassResult := do
   let (tempSource, projectRoot) ← setupSubprocessExecution source fileName
 
   -- Write failedChanges to a temp file if non-empty
@@ -495,8 +495,8 @@ def runPassSubprocess (passName : String) (source : String) (fileName : String)
     args := args.push "--unstable-only"
   if let some idx := topmostEndIdx then
     args := args ++ #["--topmost-end-idx", toString idx]
-  if let some tc := crossToolchain then
-    args := args ++ #["--cross-toolchain", tc]
+  if let some ws := crossWorkspace then
+    args := args ++ #["--cross-workspace", ws]
 
   -- Helper to clean up temp files (silently ignores errors)
   let cleanup : IO Unit := do

@@ -248,21 +248,68 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
   else
     return 0
 
-/-- Run a CLI test by executing the minimizer and comparing output -/
+/-- If `<test>.cross-workspace-toolchain` is present, provision a sibling Lake
+    workspace pinned to that toolchain so the test can exercise
+    `--cross-workspace`. Returns the args to append to the minimizer invocation
+    (empty when there is no sidecar). The workspace lives under
+    `LeanMinimizerTest/.cross-workspaces/<sanitized-toolchain>/` so it is reused
+    across test runs instead of being rebuilt for every invocation.
+
+    Deliberately minimal: a bare `lakefile.toml` with no dependencies, a
+    `lean-toolchain` file, and an empty `X.lean` to give Lake something to chew
+    on. The cross lean is invoked via `lake env lean <tempfile>` with
+    `cwd := <this-dir>`, so the workspace just needs to exist and be valid — it
+    does not need `lake build` unless the fixture imports project-local modules
+    (none of ours do). -/
+def provisionCrossWorkspaceArgs (testFile : FilePath) : IO (Array String) := do
+  let sidecar : FilePath := (stripLeanExt testFile) ++ ".cross-workspace-toolchain"
+  if !(← sidecar.pathExists) then
+    return #[]
+  let toolchain := (← IO.FS.readFile sidecar).trimAscii.toString
+  -- Sanitize toolchain name to a filesystem-safe dir suffix.
+  let sanitized := toolchain.map fun c => if c.isAlphanum then c else '-'
+  let cwd ← IO.currentDir
+  let wsDir : FilePath := cwd / "LeanMinimizerTest" / ".cross-workspaces" / sanitized
+  IO.FS.createDirAll wsDir
+  let toolchainFile := wsDir / "lean-toolchain"
+  IO.FS.writeFile toolchainFile (toolchain ++ "\n")
+  let lakefile := wsDir / "lakefile.toml"
+  if !(← lakefile.pathExists) then
+    IO.FS.writeFile lakefile
+      "name = \"cross-workspace\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"X\"\n"
+  let xLean := wsDir / "X.lean"
+  if !(← xLean.pathExists) then
+    IO.FS.writeFile xLean ""
+  return #["--cross-workspace", wsDir.toString]
+
+/-- Run a CLI test by executing the minimizer and comparing output.
+
+    Sidecar file conventions (relative to `<test>.lean`):
+    * `<test>.lean.args`            — extra CLI args (whitespace-split).
+    * `<test>.lean.input`           — indirection: treat this file's contents as the input path.
+    * `<test>.lean.expected.exit`   — expected exit code (default 0).
+    * `<test>.expected.lean`        — exact stdout match.
+    * `<test>.expected.err`         — exact stderr match.
+    * `<test>.expected.err.contains` — if present, stderr is asserted to CONTAIN this
+      string rather than match `<test>.expected.err` exactly. Useful for asserting on
+      stable error tags when the surrounding prose is allowed to drift. When this file
+      is present, `<test>.expected.lean` is optional. -/
 def runCLITest (testFile : FilePath) : IO TestResult := do
   let base := stripLeanExt testFile
   let expectedOutFile : FilePath := base ++ ".expected.lean"
   let expectedErrFile : FilePath := base ++ ".expected.err"
+  let expectedErrContainsFile : FilePath := base ++ ".expected.err.contains"
   let producedOutFile : FilePath := base ++ ".produced.lean"
   let producedErrFile : FilePath := base ++ ".produced.err"
 
   let inputFile ← getCLIInput testFile
   let extraArgs ← getCLIArgs testFile
   let expectedExit ← getExpectedExit testFile
+  let crossWsArgs ← provisionCrossWorkspaceArgs testFile
 
   -- Run minimizer binary directly (faster than `lake exe minimize`)
   let cwd ← IO.currentDir
-  let args := #[inputFile.toString] ++ extraArgs
+  let args := #[inputFile.toString] ++ extraArgs ++ crossWsArgs
   -- Get environment variables needed by the minimize binary
   let leanPath ← IO.getEnv "LEAN_PATH"
   let leanSysroot ← IO.getEnv "LEAN_SYSROOT"
@@ -283,11 +330,14 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   IO.FS.writeFile producedOutFile result.stdout
   IO.FS.writeFile producedErrFile result.stderr
 
-  -- Check expected files exist (after producing output so --accept works)
-  if !(← expectedOutFile.pathExists) then
+  let hasErrContains ← expectedErrContainsFile.pathExists
+
+  -- Check expected files exist (after producing output so --accept works).
+  -- `.expected.err.contains` makes `.expected.lean` optional, since tests that assert
+  -- a specific error tag usually don't produce a meaningful stdout.
+  if !(← expectedOutFile.pathExists) && !hasErrContains then
     return .missingExpected
 
-  let expectedOut ← IO.FS.readFile expectedOutFile
   let expectedErr ← if ← expectedErrFile.pathExists then
     IO.FS.readFile expectedErrFile
   else
@@ -297,29 +347,37 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   if result.exitCode != expectedExit then
     return .failed s!"Exit code mismatch: expected {expectedExit}, got {result.exitCode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
-  -- Compare stdout (normalize trailing newlines)
-  let expectedOutNorm := expectedOut.trimAsciiEnd.toString ++ "\n"
-  let producedOutNorm := result.stdout.trimAsciiEnd.toString ++ "\n"
+  -- Compare stdout (skipped if no .expected.lean and we're in contains mode)
+  if ← expectedOutFile.pathExists then
+    let expectedOut ← IO.FS.readFile expectedOutFile
+    let expectedOutNorm := expectedOut.trimAsciiEnd.toString ++ "\n"
+    let producedOutNorm := result.stdout.trimAsciiEnd.toString ++ "\n"
+    if expectedOutNorm != producedOutNorm then
+      let diffResult ← IO.Process.output {
+        cmd := "diff"
+        args := #["-u", "--label", "expected.out", "--label", "produced.out",
+                  expectedOutFile.toString, producedOutFile.toString]
+      }
+      return .failed diffResult.stdout
 
-  if expectedOutNorm != producedOutNorm then
-    let diffResult ← IO.Process.output {
-      cmd := "diff"
-      args := #["-u", "--label", "expected.out", "--label", "produced.out",
-                expectedOutFile.toString, producedOutFile.toString]
-    }
-    return .failed diffResult.stdout
-
-  -- Compare stderr (normalize trailing newlines)
-  let expectedErrNorm := expectedErr.trimAsciiEnd.toString ++ "\n"
-  let producedErrNorm := result.stderr.trimAsciiEnd.toString ++ "\n"
-
-  if expectedErrNorm != producedErrNorm then
-    let diffResult ← IO.Process.output {
-      cmd := "diff"
-      args := #["-u", "--label", "expected.err", "--label", "produced.err",
-                expectedErrFile.toString, producedErrFile.toString]
-    }
-    return .failed diffResult.stdout
+  -- Stderr check: either substring-contains (if .expected.err.contains present)
+  -- or exact match (default).
+  if hasErrContains then
+    let needle := (← IO.FS.readFile expectedErrContainsFile).trimAscii.toString
+    if needle.isEmpty then
+      return .failed s!".expected.err.contains is empty; refusing to vacuously pass"
+    if !result.stderr.containsSubstr needle then
+      return .failed s!"stderr does not contain expected tag {repr needle}\n--- stderr:\n{result.stderr}"
+  else
+    let expectedErrNorm := expectedErr.trimAsciiEnd.toString ++ "\n"
+    let producedErrNorm := result.stderr.trimAsciiEnd.toString ++ "\n"
+    if expectedErrNorm != producedErrNorm then
+      let diffResult ← IO.Process.output {
+        cmd := "diff"
+        args := #["-u", "--label", "expected.err", "--label", "produced.err",
+                  expectedErrFile.toString, producedErrFile.toString]
+      }
+      return .failed diffResult.stdout
 
   return .passed
 

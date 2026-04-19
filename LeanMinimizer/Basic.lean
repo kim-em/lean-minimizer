@@ -97,11 +97,17 @@ Options:
     as the input instead of the original file. This allows continuing an
     interrupted minimization.
 
-  --cross-toolchain <TOOLCHAIN>
-    Cross-version minimization. Specifies a second Lean toolchain (e.g.
-    leanprover/lean4:v4.27.0). The file must compile successfully under
-    BOTH the primary toolchain and the cross toolchain after each
-    minimization step.
+  --cross-workspace <PATH>
+    Cross-version minimization. Specifies a second, pre-built Lake
+    workspace whose `lean-toolchain` pins a different Lean release. The
+    file must compile successfully under BOTH the primary toolchain
+    (the one `lake exe minimize` is itself running under) and the cross
+    workspace's toolchain, after each minimization step.
+
+    Cross-checks are performed by spawning `lake env lean` with the
+    given path as the working directory, with inherited Lake/Lean/elan
+    environment variables explicitly cleared so that the cross workspace
+    controls toolchain and library resolution.
 
     Use #elab_if to conditionally elaborate code based on the Lean
     version, and #guard_msgs to capture version-specific error messages.
@@ -109,8 +115,6 @@ Options:
     toolchain, and the minimizer just ensures both succeed.
 
     See the #elab_if section below for the definition and usage.
-
-    Uses `elan run --install` to invoke the cross toolchain.
 
   --only-<PASS>
     Run only the specified pass once. Available passes:
@@ -176,7 +180,11 @@ Cross-version minimization:
 
   Then minimize with:
 
-    lake exe minimize test.lean --cross-toolchain leanprover/lean4:v4.27.0
+    lake exe minimize test.lean --cross-workspace /path/to/cross-ws
+
+  where `/path/to/cross-ws` is a pre-built Lake workspace with a
+  `lean-toolchain` pinning the alternate toolchain (e.g. v4.27.0) and
+  the same project dependencies as the primary workspace.
 
   The minimizer ensures the file compiles under BOTH toolchains.
 "
@@ -213,7 +221,7 @@ structure Args where
   completeSweepBudget : Float := 0.20
   /-- Cross-version minimization: a second toolchain where the file must also compile.
       Use with #elab_if to encode version-specific expectations in the file itself. -/
-  crossToolchain : Option String := none
+  crossWorkspace : Option String := none
   /-- Commit to git after each pass that makes a change -/
   gitCommit : Bool := false
 
@@ -258,8 +266,10 @@ def parseArgs (args : List String) : Except String Args := do
     | "--only-empty-scope" :: rest => go rest { acc with onlyPass := some "empty-scope" }
     | "--git" :: rest => go rest { acc with gitCommit := true }
     | "--resume" :: rest => go rest { acc with resume := true }
-    | "--cross-toolchain" :: tc :: rest => go rest { acc with crossToolchain := some tc }
-    | "--cross-toolchain" :: [] => .error "--cross-toolchain requires an argument"
+    | "--cross-workspace" :: path :: rest => go rest { acc with crossWorkspace := some path }
+    | "--cross-workspace" :: [] => .error "--cross-workspace requires an argument"
+    | "--cross-toolchain" :: _ :: _ | "--cross-toolchain" :: [] =>
+        .error "--cross-toolchain was replaced by --cross-workspace; see `--help`"
     | "--complete-sweep-budget" :: value :: rest =>
       -- Parse as percentage (0-100) and convert to fraction
       match value.toNat? with
@@ -328,7 +338,7 @@ structure MinState where
   /-- Output file to write intermediate results to (optional) -/
   outputFile : Option String := none
   /-- Cross-version minimization: a second toolchain where the file must also compile -/
-  crossToolchain : Option String := none
+  crossWorkspace : Option String := none
 
 /-- A heuristic for splitting candidates during delta debugging.
 
@@ -509,40 +519,106 @@ def reconstructSource (state : MinState) (keepIndices : Array Nat) : String := I
 
   result
 
-/-- Test if source compiles successfully under a specific toolchain.
-    Used for cross-version minimization to verify the file works on both toolchains.
-    Uses `elan run --install` to ensure the correct toolchain is used without fallback. -/
-def testSucceedsWithToolchain (source : String) (fileName : String) (toolchain : String) : IO Bool := do
+/-- Internal: run `lean` on `source` inside `crossWorkspace` under a hermetic
+    allowlist environment. Returns `(success, combinedOutput)` where
+    `combinedOutput` is the child's stdout+stderr (useful on failure).
+
+    Two subtleties make this tricky:
+
+    * `lake env` injects the PRIMARY toolchain's `bin/` ahead of
+      `$ELAN_HOME/bin` on `PATH`. A bare `lake` inside a child process would
+      therefore resolve to the primary toolchain's `lake` and bypass elan
+      entirely — silently running the cross workspace under the primary
+      toolchain. We invoke the elan shim by absolute path so cwd's
+      `lean-toolchain` file wins.
+
+    * The parent process also leaks loader and toolchain env vars
+      (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`,
+      `NIX_LD`, `NIX_LD_LIBRARY_PATH`, `LEAN_*`, `LAKE_*`, `ELAN_TOOLCHAIN`, …)
+      — that is exactly the class of variable that caused the original bug.
+      Trying to enumerate every dangerous var is a rearguard action; new
+      ones keep showing up. We instead build the child's environment from
+      an explicit **allowlist** by execing `env -i` with only the variables
+      we know the subprocess needs, and let everything else drop on the
+      floor. -/
+private def runCrossLean (source : String) (fileName : String)
+    (crossWorkspace : String) : IO (Bool × String) := do
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
   let tempDir ← getTempDir
   let tempFile := tempDir / s!".lean-minimize-{pid}-cross-{baseName}"
   IO.FS.writeFile tempFile source
 
-  let leanPath ← IO.getEnv "LEAN_PATH"
+  -- leanOptions come from the CROSS workspace's lakefile, not the primary's —
+  -- options like `autoImplicit` can differ between toolchains.
+  let leanOptions ← getLeanOptionsFromToml crossWorkspace
 
-  let env : Array (String × Option String) := #[
-    ("LEAN_PATH", leanPath),
-    ("LEAN_SYSROOT", none)
+  -- Locate the elan `lake` shim. HOME fallback makes this portable across
+  -- Linux, macOS, and nix/home-manager setups that don't always export
+  -- ELAN_HOME into child processes.
+  let elanHome ← match ← IO.getEnv "ELAN_HOME" with
+    | some h => pure h
+    | none =>
+      match ← IO.getEnv "HOME" with
+      | some h => pure (h ++ "/.elan")
+      | none =>
+        throw <| IO.userError "CROSS_WORKSPACE_SETUP_FAILED: neither ELAN_HOME nor HOME is set; cannot locate elan `lake` shim"
+  let elanLakeShim := elanHome ++ "/bin/lake"
+
+  -- Allowlist env: exec `env -i <KEY=VALUE> … <lake> env lean <file>`. `env -i`
+  -- starts from an empty environment, so nothing the parent exported leaks.
+  let home := (← IO.getEnv "HOME").getD "/"
+  let lang := (← IO.getEnv "LANG").getD "C.UTF-8"
+  let tmpdir := (← IO.getEnv "TMPDIR").getD "/tmp"
+  let allowlist : Array String := #[
+    s!"HOME={home}",
+    s!"ELAN_HOME={elanHome}",
+    s!"PATH={elanHome}/bin:/usr/bin:/bin",
+    s!"LANG={lang}",
+    s!"TMPDIR={tmpdir}"
   ]
-
-  let leanOptions ← getLeanOptionsForFile fileName
 
   try
     let result ← IO.Process.output {
-      cmd := "elan"
-      args := #["run", "--install", toolchain, "lean"] ++ leanOptions ++ #[tempFile.toString]
-      env := env
+      cmd := "env"
+      args := #["-i"] ++ allowlist
+              ++ #[elanLakeShim, "env", "lean"]
+              ++ leanOptions
+              ++ #[tempFile.toString]
+      cwd := crossWorkspace
     }
-    return result.exitCode == 0
+    let success := result.exitCode == 0
+    let out := if success then "" else (result.stdout ++ result.stderr)
+    return (success, out)
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
+/-- Test if `source` compiles under a second, independent Lake workspace.
+    Used for cross-version minimization: verifies the file works under both the
+    primary toolchain (driven by `testCompilesSubprocess`) and the toolchain
+    pinned by `crossWorkspace/lean-toolchain`.
+
+    The caller must have already built `crossWorkspace` (that is, its
+    dependencies must be available under `<crossWorkspace>/.lake/build/`). This
+    function does not run `lake build`; orchestrating that is the responsibility
+    of the test harness or the Python `minimize` CLI. -/
+def testSucceedsInCrossWorkspace (source : String) (fileName : String)
+    (crossWorkspace : String) : IO Bool := do
+  let (success, _) ← runCrossLean source fileName crossWorkspace
+  return success
+
+/-- As `testSucceedsInCrossWorkspace`, but on failure returns the cross
+    compile's combined stdout+stderr so callers can surface it to the user
+    in mid-minimization error messages. -/
+def testSucceedsInCrossWorkspaceWithError (source : String) (fileName : String)
+    (crossWorkspace : String) : IO (Bool × String) :=
+  runCrossLean source fileName crossWorkspace
+
 /-- Test if source compiles by running lean in a subprocess.
     This isolates memory usage - when the subprocess exits, all Lean caches are freed.
-    When `crossToolchain` is set, also verifies the file compiles under that toolchain. -/
+    When `crossWorkspace` is set, also verifies the file compiles under that toolchain. -/
 def testCompilesSubprocess (source : String) (fileName : String)
-    (crossToolchain : Option String := none) : IO Bool := do
+    (crossWorkspace : Option String := none) : IO Bool := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
@@ -573,17 +649,17 @@ def testCompilesSubprocess (source : String) (fileName : String)
     }
     if result.exitCode != 0 then
       return false
-    -- Primary check passed. Now do cross-toolchain check if configured.
-    match crossToolchain with
+    -- Primary check passed. Now do cross-workspace check if configured.
+    match crossWorkspace with
     | none => return true
-    | some tc => testSucceedsWithToolchain source fileName tc
+    | some ws => testSucceedsInCrossWorkspace source fileName ws
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
 /-- Check if source compiles using subprocess, returning error output if it fails.
-    When `crossToolchain` is set, also verifies the file compiles under that toolchain. -/
+    When `crossWorkspace` is set, also verifies the file compiles there. -/
 def testCompilesSubprocessWithError (source : String) (fileName : String)
-    (crossToolchain : Option String := none) : IO (Bool × String) := do
+    (crossWorkspace : Option String := none) : IO (Bool × String) := do
   -- Use a name based on input file and PID to avoid conflicts in parallel runs
   let baseName := (System.FilePath.mk fileName).fileName.getD "test"
   let pid ← IO.Process.getPID
@@ -617,15 +693,15 @@ def testCompilesSubprocessWithError (source : String) (fileName : String)
     let errorOutput := if success then "" else (result.stdout ++ result.stderr)
     if !success then
       return (false, errorOutput)
-    -- Primary check passed. Now do cross-toolchain check if configured.
-    match crossToolchain with
+    -- Primary check passed. Now do cross-workspace check if configured.
+    match crossWorkspace with
     | none => return (true, "")
-    | some tc =>
-      let crossSucceeds ← testSucceedsWithToolchain source fileName tc
+    | some ws =>
+      let (crossSucceeds, crossErr) ← testSucceedsInCrossWorkspaceWithError source fileName ws
       if crossSucceeds then
         return (true, "")
       else
-        return (false, "Cross-toolchain check failed: file failed to compile under " ++ tc)
+        return (false, s!"Cross-workspace check failed in {ws}:\n{crossErr}")
   finally
     try IO.FS.removeFile tempFile catch _ => pure ()
 
@@ -633,7 +709,7 @@ def testCompilesSubprocessWithError (source : String) (fileName : String)
 def testCompiles (state : MinState) (keepIndices : Array Nat) : IO Bool := do
   state.testCount.modify (· + 1)
   let source := reconstructSource state keepIndices
-  testCompilesSubprocess source state.fileName state.crossToolchain
+  testCompilesSubprocess source state.fileName state.crossWorkspace
 
 /-- Write current progress to the output file if configured -/
 def writeProgress (state : MinState) (keepIndices : Array Nat) : IO Unit := do

@@ -15,6 +15,17 @@ jobs:
         with:
           build-args: 'minimize test'
           test: false
+      - name: Cache cross-toolchain (leanprover/lean4:v4.27.0)
+        id: cross-toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan/toolchains/leanprover--lean4---v4.27.0
+            ~/.elan/update-hashes/leanprover--lean4---v4.27.0
+          key: elan-toolchain-leanprover-lean4-v4.27.0-${{ runner.os }}
+      - name: Install cross-toolchain for CrossToolchain CLI tests
+        if: steps.cross-toolchain-cache.outputs.cache-hit != 'true'
+        run: elan toolchain install leanprover/lean4:v4.27.0
       - name: Run tests
         timeout-minutes: 10
         run: lake env .lake/build/bin/test

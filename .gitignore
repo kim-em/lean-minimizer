@@ -4,3 +4,4 @@
 *.produced.err
 *.out.lean
 *.log
+LeanMinimizerTest/.cross-workspaces/

@@ -55,7 +55,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
     (topmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none) : IO Unit := do
+    (crossWorkspace : Option String := none) : IO Unit := do
   -- Read and elaborate
   let source ← IO.FS.readFile file
   let result ← runFrontend source file
@@ -88,7 +88,7 @@ private unsafe def runPassInnerCore (pass : Pass) (file : String) (marker : Stri
     stableSections
     topmostEndIdx
     isCompleteSweep
-    crossToolchain
+    crossWorkspace
   }
 
   -- Run the pass
@@ -115,10 +115,10 @@ private unsafe def runPassInner (pass : Pass) (file : String) (marker : String) 
     (stableSections : Std.HashSet String := {})
     (isCompleteSweep : Bool := true)
     (topmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none) : IO UInt32 := do
+    (crossWorkspace : Option String := none) : IO UInt32 := do
   try
     runPassInnerCore pass file marker verbose failedChanges stableSections isCompleteSweep
-      topmostEndIdx crossToolchain
+      topmostEndIdx crossWorkspace
     return 0
   catch e =>
     IO.eprintln s!"Run-pass error: {e}"
@@ -132,7 +132,7 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     (stableFile : Option String := none)
     (isCompleteSweep : Bool := true)
     (topmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none) : IO UInt32 := do
+    (crossWorkspace : Option String := none) : IO UInt32 := do
   initSearchPath (← findSysroot)
 
   -- Read failedChanges from memory file if provided
@@ -174,7 +174,7 @@ unsafe def handleRunPass (passName : String) (file : String) (marker : String) (
     return 1
   | some (_, pass) =>
     runPassInner pass file marker verbose failedChanges stableSections isCompleteSweep
-      topmostEndIdx crossToolchain
+      topmostEndIdx crossWorkspace
 
 /-- All available passes with their CLI flag names -/
 unsafe def allPasses : Array (String × Pass) := #[
@@ -232,7 +232,7 @@ structure RunPassArgs where
   stableFile : Option String
   isCompleteSweep : Bool
   topmostEndIdx : Option Nat
-  crossToolchain : Option String
+  crossWorkspace : Option String
 
 /-- Parse --run-pass arguments flexibly (handles any order of optional flags) -/
 def parseRunPassArgs (args : List String) : Option RunPassArgs := do
@@ -244,7 +244,7 @@ def parseRunPassArgs (args : List String) : Option RunPassArgs := do
     let mut stableFile : Option String := none
     let mut isCompleteSweep := true
     let mut topmostEndIdx : Option Nat := none
-    let mut crossToolchain : Option String := none
+    let mut crossWorkspace : Option String := none
     let mut remaining := rest
     while !remaining.isEmpty do
       match remaining with
@@ -254,7 +254,7 @@ def parseRunPassArgs (args : List String) : Option RunPassArgs := do
       | "--stable-file" :: sf :: tail => stableFile := some sf; remaining := tail
       | "--unstable-only" :: tail => isCompleteSweep := false; remaining := tail
       | "--topmost-end-idx" :: idx :: tail => topmostEndIdx := idx.toNat?; remaining := tail
-      | "--cross-toolchain" :: tc :: tail => crossToolchain := some tc; remaining := tail
+      | "--cross-workspace" :: ws :: tail => crossWorkspace := some ws; remaining := tail
       | [] => remaining := []  -- Exit while loop
       | unknown :: _ =>
           -- Log warning for unexpected args (shouldn't happen with internal subprocess calls)
@@ -262,7 +262,7 @@ def parseRunPassArgs (args : List String) : Option RunPassArgs := do
           remaining := []
     let m ← marker
     return { passName, file, marker := m, verbose, memoryFile, stableFile,
-             isCompleteSweep, topmostEndIdx, crossToolchain }
+             isCompleteSweep, topmostEndIdx, crossWorkspace }
   | _ => none
 
 /-- Entry point -/
@@ -277,7 +277,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     if let some rpArgs := parseRunPassArgs args then
       return ← handleRunPass rpArgs.passName rpArgs.file rpArgs.marker rpArgs.verbose
         rpArgs.memoryFile rpArgs.stableFile rpArgs.isCompleteSweep rpArgs.topmostEndIdx
-        rpArgs.crossToolchain
+        rpArgs.crossWorkspace
     else
       pure ()
 
@@ -338,34 +338,63 @@ unsafe def main (args : List String) : IO UInt32 := do
           if parsedArgs.verbose then
             IO.eprintln s!"  No section found, processing entire file"
 
-      -- Validate cross-toolchain setup if specified
-      if let some tc := parsedArgs.crossToolchain then
-        if parsedArgs.verbose then
-          IO.eprintln s!"Cross-version minimization: file must compile under both primary and {tc}"
-        -- Verify the cross toolchain can actually be resolved by elan
-        let elanCheck ← IO.Process.output {
-          cmd := "elan"
-          args := #["run", "--install", tc, "lean", "--version"]
-        }
-        if elanCheck.exitCode != 0 then
-          throw <| IO.userError s!"Cross toolchain '{tc}' could not be resolved.\n\
-            Make sure it is installed (e.g. elan toolchain install {tc}).\n\
-            Error: {elanCheck.stderr.trimAscii}"
-        if parsedArgs.verbose then
-          IO.eprintln s!"  Cross toolchain OK"
-        -- Verify initial file compiles under primary
-        if !(← testCompilesSubprocess input inputFile) then
-          throw <| IO.userError "Initial file does not compile under the primary toolchain"
-        -- Verify initial file compiles under cross toolchain
-        if !(← testSucceedsWithToolchain input inputFile tc) then
-          throw <| IO.userError s!"Initial file does not compile under cross toolchain {tc}.\n\
-            Cross-version minimization requires the file to compile under BOTH toolchains.\n\
-            Use #elab_if to conditionally elaborate version-specific code."
+      -- Validate cross-workspace setup if specified.
+      -- We normalise the path to absolute here so that every `cwd := ...` spawn
+      -- in `testSucceedsInCrossWorkspace` resolves the same way, independent of
+      -- which directory tier-2 pass subprocesses happen to run from.
+      -- Validation is split into *structural* checks (tagged
+      -- `CROSS_WORKSPACE_*`) that happen here and *compile* checks (tagged
+      -- `INITIAL_COMPILE_FAILED` / `CROSS_TOOLCHAIN_INITIAL_COMPILE_FAILED`)
+      -- that happen after: the first category means "your workspace is
+      -- broken, we can't even start"; the second means "we tried, your
+      -- source doesn't compile there."
+      let crossWorkspaceAbs : Option String ← match parsedArgs.crossWorkspace with
+        | none => pure none
+        | some ws =>
+          let wsPath : System.FilePath := ws
+          if !(← wsPath.pathExists) then
+            throw <| IO.userError s!"CROSS_WORKSPACE_NOT_FOUND: --cross-workspace path '{ws}' does not exist"
+          let cwd ← IO.currentDir
+          let wsAbs := if wsPath.isAbsolute then wsPath else cwd / wsPath
+          let wsAbsStr := wsAbs.toString
+          -- Required workspace shape.
+          let toolchainFile := wsAbs / "lean-toolchain"
+          if !(← toolchainFile.pathExists) then
+            throw <| IO.userError s!"CROSS_WORKSPACE_INVALID: '{wsAbsStr}' has no lean-toolchain file"
+          let hasLakefileToml ← (wsAbs / "lakefile.toml").pathExists
+          let hasLakefileLean ← (wsAbs / "lakefile.lean").pathExists
+          if !hasLakefileToml && !hasLakefileLean then
+            throw <| IO.userError s!"CROSS_WORKSPACE_INVALID: '{wsAbsStr}' has no lakefile.toml or lakefile.lean"
+          let tcLabel := (← IO.FS.readFile toolchainFile).trimAscii.toString
+          if parsedArgs.verbose then
+            IO.eprintln s!"Cross-version minimization: file must compile under both primary and {tcLabel} (workspace: {wsAbsStr})"
+          -- Probe the cross workspace's lake shim: if `lake env lean --version`
+          -- doesn't work, the cross workspace is structurally broken (missing
+          -- `.lake/`, corrupt toolchain install, etc.) and we want to flag that
+          -- as a setup problem rather than a "your source doesn't compile"
+          -- compile failure.
+          let (probeOk, probeErr) ←
+            testSucceedsInCrossWorkspaceWithError "" "probe.lean" wsAbsStr
+          -- An empty file should always elaborate; if the probe fails we know
+          -- the workspace itself is broken.
+          if !probeOk then
+            throw <| IO.userError s!"CROSS_WORKSPACE_SETUP_FAILED: cross workspace '{wsAbsStr}' (toolchain {tcLabel}) is not functional. Did you `lake build` it?\n{probeErr}"
+          -- Verify initial file compiles under primary
+          if !(← testCompilesSubprocess input inputFile) then
+            throw <| IO.userError "INITIAL_COMPILE_FAILED: Initial file does not compile under the primary toolchain"
+          -- Verify initial file compiles under the cross workspace
+          let (crossOk, crossErr) ←
+            testSucceedsInCrossWorkspaceWithError input inputFile wsAbsStr
+          if !crossOk then
+            throw <| IO.userError s!"CROSS_TOOLCHAIN_INITIAL_COMPILE_FAILED: Initial file does not compile under cross toolchain {tcLabel} (workspace: {wsAbsStr}).\n\
+              Cross-version minimization requires the file to compile under BOTH toolchains.\n\
+              Use #elab_if to conditionally elaborate version-specific code.\n{crossErr}"
+          pure (some wsAbsStr)
 
       let _ ← runPasses passes input inputFile parsedArgs.marker
                      parsedArgs.verbose (some outputFile)
                      parsedArgs.completeSweepBudget initialStableSections initialTopmostEndIdx
-                     parsedArgs.crossToolchain parsedArgs.gitCommit
+                     crossWorkspaceAbs parsedArgs.gitCommit
       IO.eprintln s!"Output written to {outputFile}"
       return 0
     catch e =>
