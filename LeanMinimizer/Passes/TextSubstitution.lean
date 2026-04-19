@@ -664,7 +664,7 @@ def replacementKey (source : String) (r : Replacement) : String :=
 def tryReplacements (source : String) (replacements : Array Replacement)
     (fileName : String) (verbose : Bool)
     (failedChanges : Std.HashSet String)
-    (crossToolchain : Option String := none) : IO (Option String × Array String) := do
+    (crossWorkspace : Option String := none) : IO (Option String × Array String) := do
   if replacements.isEmpty then
     return (none, #[])
 
@@ -687,7 +687,7 @@ def tryReplacements (source : String) (replacements : Array Replacement)
 
   -- Try all at once (only with filtered replacements)
   let allAtOnce := applyReplacements source filtered
-  if ← testCompilesSubprocess allAtOnce fileName crossToolchain then
+  if ← testCompilesSubprocess allAtOnce fileName crossWorkspace then
     if verbose then
       IO.eprintln s!"      Applied all {filtered.size} replacements at once"
     return (some allAtOnce, #[])
@@ -699,7 +699,7 @@ def tryReplacements (source : String) (replacements : Array Replacement)
   for r in filtered do
     let key := replacementKey currentSource r
     let newSource := applyReplacement currentSource r
-    if ← testCompilesSubprocess newSource fileName crossToolchain then
+    if ← testCompilesSubprocess newSource fileName crossWorkspace then
       currentSource := newSource
       anyChanged := true
     else
@@ -753,7 +753,7 @@ def textSubstitutionPass : Pass where
       if !replacements.isEmpty then
         if ctx.verbose then
           IO.eprintln s!"    {miniPass.name}: found {replacements.size} potential replacements"
-        let (result, failedKeys) ← tryReplacements source replacements ctx.fileName ctx.verbose ctx.failedChanges ctx.crossToolchain
+        let (result, failedKeys) ← tryReplacements source replacements ctx.fileName ctx.verbose ctx.failedChanges ctx.crossWorkspace
         allFailedKeys := allFailedKeys ++ failedKeys
         if let some newSource := result then
           source := newSource

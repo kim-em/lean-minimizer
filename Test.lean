@@ -248,6 +248,40 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
   else
     return 0
 
+/-- If `<test>.cross-workspace-toolchain` is present, provision a sibling Lake
+    workspace pinned to that toolchain so the test can exercise
+    `--cross-workspace`. Returns the args to append to the minimizer invocation
+    (empty when there is no sidecar). The workspace lives under
+    `LeanMinimizerTest/.cross-workspaces/<sanitized-toolchain>/` so it is reused
+    across test runs instead of being rebuilt for every invocation.
+
+    Deliberately minimal: a bare `lakefile.toml` with no dependencies, a
+    `lean-toolchain` file, and an empty `X.lean` to give Lake something to chew
+    on. The cross lean is invoked via `lake env lean <tempfile>` with
+    `cwd := <this-dir>`, so the workspace just needs to exist and be valid — it
+    does not need `lake build` unless the fixture imports project-local modules
+    (none of ours do). -/
+def provisionCrossWorkspaceArgs (testFile : FilePath) : IO (Array String) := do
+  let sidecar : FilePath := (stripLeanExt testFile) ++ ".cross-workspace-toolchain"
+  if !(← sidecar.pathExists) then
+    return #[]
+  let toolchain := (← IO.FS.readFile sidecar).trimAscii.toString
+  -- Sanitize toolchain name to a filesystem-safe dir suffix.
+  let sanitized := toolchain.map fun c => if c.isAlphanum then c else '-'
+  let cwd ← IO.currentDir
+  let wsDir : FilePath := cwd / "LeanMinimizerTest" / ".cross-workspaces" / sanitized
+  IO.FS.createDirAll wsDir
+  let toolchainFile := wsDir / "lean-toolchain"
+  IO.FS.writeFile toolchainFile (toolchain ++ "\n")
+  let lakefile := wsDir / "lakefile.toml"
+  if !(← lakefile.pathExists) then
+    IO.FS.writeFile lakefile
+      "name = \"cross-workspace\"\nversion = \"0.1.0\"\n\n[[lean_lib]]\nname = \"X\"\n"
+  let xLean := wsDir / "X.lean"
+  if !(← xLean.pathExists) then
+    IO.FS.writeFile xLean ""
+  return #["--cross-workspace", wsDir.toString]
+
 /-- Run a CLI test by executing the minimizer and comparing output.
 
     Sidecar file conventions (relative to `<test>.lean`):
@@ -271,10 +305,11 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   let inputFile ← getCLIInput testFile
   let extraArgs ← getCLIArgs testFile
   let expectedExit ← getExpectedExit testFile
+  let crossWsArgs ← provisionCrossWorkspaceArgs testFile
 
   -- Run minimizer binary directly (faster than `lake exe minimize`)
   let cwd ← IO.currentDir
-  let args := #[inputFile.toString] ++ extraArgs
+  let args := #[inputFile.toString] ++ extraArgs ++ crossWsArgs
   -- Get environment variables needed by the minimize binary
   let leanPath ← IO.getEnv "LEAN_PATH"
   let leanSysroot ← IO.getEnv "LEAN_SYSROOT"

@@ -86,7 +86,7 @@ structure PassContext where
       or an unstable-only sweep (skip stable sections to save time). -/
   isCompleteSweep : Bool := true
   /-- Cross-version minimization: a second toolchain where the file must also compile -/
-  crossToolchain : Option String := none
+  crossWorkspace : Option String := none
 
 /-- Result of running a pass -/
 structure PassResult where
@@ -270,7 +270,7 @@ def mkMinStateFromContext (ctx : PassContext) : IO MinState := do
     verbose := ctx.verbose
     testCount
     outputFile := ctx.outputFile
-    crossToolchain := ctx.crossToolchain
+    crossWorkspace := ctx.crossWorkspace
   }
 
 /-- Convert SubprocessPassResult to PassResult -/
@@ -317,7 +317,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     (completeSweepBudget : Float := 0.20)
     (initialStableSections : Std.HashSet String := {})
     (initialTopmostEndIdx : Option Nat := none)
-    (crossToolchain : Option String := none)
+    (crossWorkspace : Option String := none)
     (gitCommit : Bool := false) : IO String := do
   if passes.isEmpty then
     return input
@@ -387,7 +387,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
     let result ← if pass.needsSubprocess then
       -- Tier 2 pass: run in subprocess with full elaboration
       let subResult ← runPassSubprocess pass.cliFlag source fileName marker verbose failedChanges
-          stableSections isCompleteSweep topmostEndIdx crossToolchain
+          stableSections isCompleteSweep topmostEndIdx crossWorkspace
       pure subResult.toPassResult
     else
       -- Tier 1 pass: run in orchestrator with serialized data
@@ -415,7 +415,7 @@ unsafe def runPasses (passes : Array Pass) (input : String)
         stableSections
         topmostEndIdx
         isCompleteSweep
-        crossToolchain
+        crossWorkspace
       }
       pass.run ctx
 
