@@ -355,10 +355,10 @@ unsafe def main (args : List String) : IO UInt32 := do
           IO.eprintln s!"  Cross toolchain OK"
         -- Verify initial file compiles under primary
         if !(← testCompilesSubprocess input inputFile) then
-          throw <| IO.userError "Initial file does not compile under the primary toolchain"
+          throw <| IO.userError "INITIAL_COMPILE_FAILED: Initial file does not compile under the primary toolchain"
         -- Verify initial file compiles under cross toolchain
         if !(← testSucceedsWithToolchain input inputFile tc) then
-          throw <| IO.userError s!"Initial file does not compile under cross toolchain {tc}.\n\
+          throw <| IO.userError s!"CROSS_TOOLCHAIN_INITIAL_COMPILE_FAILED: Initial file does not compile under cross toolchain {tc}.\n\
             Cross-version minimization requires the file to compile under BOTH toolchains.\n\
             Use #elab_if to conditionally elaborate version-specific code."
 

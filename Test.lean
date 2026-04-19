@@ -248,11 +248,23 @@ def getExpectedExit (testFile : FilePath) : IO UInt32 := do
   else
     return 0
 
-/-- Run a CLI test by executing the minimizer and comparing output -/
+/-- Run a CLI test by executing the minimizer and comparing output.
+
+    Sidecar file conventions (relative to `<test>.lean`):
+    * `<test>.lean.args`            — extra CLI args (whitespace-split).
+    * `<test>.lean.input`           — indirection: treat this file's contents as the input path.
+    * `<test>.lean.expected.exit`   — expected exit code (default 0).
+    * `<test>.expected.lean`        — exact stdout match.
+    * `<test>.expected.err`         — exact stderr match.
+    * `<test>.expected.err.contains` — if present, stderr is asserted to CONTAIN this
+      string rather than match `<test>.expected.err` exactly. Useful for asserting on
+      stable error tags when the surrounding prose is allowed to drift. When this file
+      is present, `<test>.expected.lean` is optional. -/
 def runCLITest (testFile : FilePath) : IO TestResult := do
   let base := stripLeanExt testFile
   let expectedOutFile : FilePath := base ++ ".expected.lean"
   let expectedErrFile : FilePath := base ++ ".expected.err"
+  let expectedErrContainsFile : FilePath := base ++ ".expected.err.contains"
   let producedOutFile : FilePath := base ++ ".produced.lean"
   let producedErrFile : FilePath := base ++ ".produced.err"
 
@@ -283,11 +295,14 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   IO.FS.writeFile producedOutFile result.stdout
   IO.FS.writeFile producedErrFile result.stderr
 
-  -- Check expected files exist (after producing output so --accept works)
-  if !(← expectedOutFile.pathExists) then
+  let hasErrContains ← expectedErrContainsFile.pathExists
+
+  -- Check expected files exist (after producing output so --accept works).
+  -- `.expected.err.contains` makes `.expected.lean` optional, since tests that assert
+  -- a specific error tag usually don't produce a meaningful stdout.
+  if !(← expectedOutFile.pathExists) && !hasErrContains then
     return .missingExpected
 
-  let expectedOut ← IO.FS.readFile expectedOutFile
   let expectedErr ← if ← expectedErrFile.pathExists then
     IO.FS.readFile expectedErrFile
   else
@@ -297,29 +312,37 @@ def runCLITest (testFile : FilePath) : IO TestResult := do
   if result.exitCode != expectedExit then
     return .failed s!"Exit code mismatch: expected {expectedExit}, got {result.exitCode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
-  -- Compare stdout (normalize trailing newlines)
-  let expectedOutNorm := expectedOut.trimAsciiEnd.toString ++ "\n"
-  let producedOutNorm := result.stdout.trimAsciiEnd.toString ++ "\n"
+  -- Compare stdout (skipped if no .expected.lean and we're in contains mode)
+  if ← expectedOutFile.pathExists then
+    let expectedOut ← IO.FS.readFile expectedOutFile
+    let expectedOutNorm := expectedOut.trimAsciiEnd.toString ++ "\n"
+    let producedOutNorm := result.stdout.trimAsciiEnd.toString ++ "\n"
+    if expectedOutNorm != producedOutNorm then
+      let diffResult ← IO.Process.output {
+        cmd := "diff"
+        args := #["-u", "--label", "expected.out", "--label", "produced.out",
+                  expectedOutFile.toString, producedOutFile.toString]
+      }
+      return .failed diffResult.stdout
 
-  if expectedOutNorm != producedOutNorm then
-    let diffResult ← IO.Process.output {
-      cmd := "diff"
-      args := #["-u", "--label", "expected.out", "--label", "produced.out",
-                expectedOutFile.toString, producedOutFile.toString]
-    }
-    return .failed diffResult.stdout
-
-  -- Compare stderr (normalize trailing newlines)
-  let expectedErrNorm := expectedErr.trimAsciiEnd.toString ++ "\n"
-  let producedErrNorm := result.stderr.trimAsciiEnd.toString ++ "\n"
-
-  if expectedErrNorm != producedErrNorm then
-    let diffResult ← IO.Process.output {
-      cmd := "diff"
-      args := #["-u", "--label", "expected.err", "--label", "produced.err",
-                expectedErrFile.toString, producedErrFile.toString]
-    }
-    return .failed diffResult.stdout
+  -- Stderr check: either substring-contains (if .expected.err.contains present)
+  -- or exact match (default).
+  if hasErrContains then
+    let needle := (← IO.FS.readFile expectedErrContainsFile).trimAscii.toString
+    if needle.isEmpty then
+      return .failed s!".expected.err.contains is empty; refusing to vacuously pass"
+    if !result.stderr.containsSubstr needle then
+      return .failed s!"stderr does not contain expected tag {repr needle}\n--- stderr:\n{result.stderr}"
+  else
+    let expectedErrNorm := expectedErr.trimAsciiEnd.toString ++ "\n"
+    let producedErrNorm := result.stderr.trimAsciiEnd.toString ++ "\n"
+    if expectedErrNorm != producedErrNorm then
+      let diffResult ← IO.Process.output {
+        cmd := "diff"
+        args := #["-u", "--label", "expected.err", "--label", "produced.err",
+                  expectedErrFile.toString, producedErrFile.toString]
+      }
+      return .failed diffResult.stdout
 
   return .passed
 
