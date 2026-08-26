@@ -3,7 +3,10 @@
   File does not use module system, skipping
   No changes, moving to next pass
 [Pass 1] Running: Command Deletion
-  First candidate: [0] def base := 1
+  First candidate: [0] /-
+Comprehensive test for the dependency heuristic.
+
+Structu...
   Last candidate:  [9] def unrelated2 := unrelated1 * 2
   (allIndices: 10, frozenIndices: 0, originalIndices: 10)
   Phase 1: Binary deletion on 10 candidates
@@ -41,7 +44,10 @@
   Removed 5 of 10 candidate commands (14 tests)
   Changes made, repeating pass
 [Pass 1] Running: Command Deletion
-  First candidate: [0] def base := 1
+  First candidate: [0] /-
+Comprehensive test for the dependency heuristic.
+
+Structu...
   Last candidate:  [4] def result2 := helper2 + 10
   (allIndices: 5, frozenIndices: 0, originalIndices: 5)
   Phase 1: Binary deletion on 5 candidates
