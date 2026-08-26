@@ -1,5 +1,33 @@
   Starting sweep (no stable sections)
 [Pass 0] Running: Module System Removal
+  File does not use module system, skipping
+  No changes, moving to next pass
+[Pass 1] Running: Command Deletion
+  (allIndices: 0, frozenIndices: 0, originalIndices: 0)
+  Phase 1: Binary deletion on 0 candidates
+  Phase 2: Linear deletion on 0 surviving candidates (0 removed by binary)
+  Removed 0 of 0 candidate commands (1 tests)
+  No changes, moving to next pass
+[Pass 2] Running: Empty Scope Removal
+  No changes, moving to next pass
+[Pass 3] Running: Open Minimization
+  No changes, moving to next pass
+[Pass 4] Running: Singleton Namespace Flattening
+  No changes, moving to next pass
+[Pass 5] Running: Public Section Removal
+  No changes, moving to next pass
+[Pass 6] Running: Body Replacement
+  Processing 0 commands for body replacement...
+  No body replacements possible
+  No changes, moving to next pass
+[Pass 7] Running: Text Substitution
+  Running text substitution mini-passes...
+    Comment removal: found 2 potential replacements
+      Applied all 2 replacements at once
+  Text substitution made changes, restarting
+  Changes made, restarting from first pass
+  Starting sweep (no stable sections)
+[Pass 0] Running: Module System Removal
 Error: Marker pattern '#guard_msgs' not found in any command.
 
 Add a marker to identify the section you want to preserve. The recommended
